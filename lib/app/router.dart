@@ -10,6 +10,7 @@ import '../features/auth/presentation/login_screen.dart';
 import '../features/fibroscan/presentation/fibroscan_screen.dart';
 import '../features/inventory/presentation/inventory_screen.dart';
 import '../features/patients/presentation/patients_screen.dart';
+import '../features/payments/presentation/payments_screen.dart';
 import '../features/reception/presentation/reception_screen.dart';
 import '../features/splash/splash_screen.dart';
 import '../features/staff/presentation/staff_screen.dart';
@@ -33,6 +34,7 @@ final routerProvider = Provider<GoRouter>((ref) {
             builder: (_, _) => const ReceptionScreen(),
           ),
           GoRoute(path: '/queue', builder: (_, _) => const QueueScreen()),
+          GoRoute(path: '/payments', builder: (_, _) => const PaymentsScreen()),
           GoRoute(path: '/patients', builder: (_, _) => const PatientsScreen()),
           // Фиброскан (эластография печени) и Анализы (лаборатория) — профильные
           // экраны «Цадмир». Гейтинг по правам fibroscan.write / analyses.write

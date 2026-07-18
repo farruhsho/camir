@@ -85,6 +85,34 @@ service cloud.firestore {
       allow update, delete: if isSuper();
     }
 
+    // ---- касса: платежи (append-only; возврат = единственная правка) ----
+    match /payments/{id} {
+      allow read: if hasPerm('payments.read');
+      // Создаёт кассир; фиксируем автора и стартовый статус.
+      allow create: if hasPerm('payments.create')
+        && request.resource.data.status == 'paid'
+        && request.resource.data.created_by == request.auth.uid;
+      // Единственная разрешённая правка — возврат: paid -> refunded, при этом
+      // сумма/состав/день/способ/имя пациента НЕ меняются. Это же отсекает
+      // двойной возврат (из refunded перейти нельзя).
+      allow update: if hasPerm('payments.refund')
+        && resource.data.status == 'paid'
+        && request.resource.data.status == 'refunded'
+        && request.resource.data.total == resource.data.total
+        && request.resource.data.items == resource.data.items
+        && request.resource.data.day == resource.data.day
+        && request.resource.data.method == resource.data.method
+        && request.resource.data.patient_name == resource.data.patient_name;
+      allow delete: if isSuper();
+    }
+
+    // ---- касса: прайс-лист услуг (кассир читает, чтобы собрать чек) ----
+    match /services/{id} {
+      allow read: if hasPerm('services.read') || hasPerm('payments.create');
+      allow create, update: if hasPerm('services.manage');
+      allow delete: if isSuper();
+    }
+
     // ---- счётчики (MRN / номер очереди) — нужны в транзакциях создания
     // карты пациента и визита. Доступ только тем, кто реально создаёт записи,
     // чтобы «обезоруженный» новый аккаунт не мог накручивать счётчики. ----

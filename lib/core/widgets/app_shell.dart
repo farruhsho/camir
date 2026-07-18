@@ -60,6 +60,14 @@ const kAppDestinations = <AppDestination>[
     '/queue',
     permissions: ['visits.read'],
   ),
+  // Касса — оплаты/возвраты (KGS «сом»), дневной кассовый отчёт.
+  AppDestination(
+    Icons.payments_outlined,
+    Icons.payments,
+    'Касса',
+    '/payments',
+    permissions: ['payments.read'],
+  ),
   AppDestination(
     Icons.people_outline,
     Icons.people,

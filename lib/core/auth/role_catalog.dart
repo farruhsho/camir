@@ -43,6 +43,11 @@ const Map<String, List<String>> kRolePermissions = <String, List<String>>{
     'analyses.write',
     'fibroscan.read',
     'fibroscan.write',
+    'payments.read',
+    'payments.create',
+    'payments.refund',
+    'services.read',
+    'services.manage',
     'audit.read',
   ],
 };
