@@ -106,11 +106,16 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
+    final first = DateTime(1900);
+    final last = DateTime(now.year + 1);
+    var initial = _parseDate() ?? now;
+    if (initial.isBefore(first)) initial = first;
+    if (initial.isAfter(last)) initial = last;
     final picked = await showDatePicker(
       context: context,
-      initialDate: _parseDate() ?? now,
-      firstDate: DateTime(1900),
-      lastDate: DateTime(now.year + 1),
+      initialDate: initial,
+      firstDate: first,
+      lastDate: last,
       helpText: 'Дата анализа',
     );
     if (picked != null) setState(() => _date.text = _fmtDmy(picked));

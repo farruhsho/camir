@@ -45,7 +45,10 @@ class PriceListScreen extends ConsumerWidget {
           IconButton(
             tooltip: 'Обновить',
             icon: const Icon(Icons.refresh, size: 20),
-            onPressed: () => ref.invalidate(allServicesProvider),
+            onPressed: () {
+              ref.invalidate(allServicesProvider);
+              ref.invalidate(activeServicesProvider);
+            },
           ),
         ],
       ),
@@ -149,7 +152,10 @@ class PriceListScreen extends ConsumerWidget {
   ) async {
     try {
       await ref.read(servicesRepositoryProvider).setActive(s.id, active);
-      if (context.mounted) ref.invalidate(allServicesProvider);
+      if (context.mounted) {
+        ref.invalidate(allServicesProvider);
+        ref.invalidate(activeServicesProvider);
+      }
     } catch (e) {
       if (context.mounted) _snack(context, friendlyError(e), error: true);
     }
@@ -164,7 +170,10 @@ class PriceListScreen extends ConsumerWidget {
       context: context,
       builder: (_) => _ServiceDialog(existing: existing),
     );
-    if (saved == true && context.mounted) ref.invalidate(allServicesProvider);
+    if (saved == true && context.mounted) {
+      ref.invalidate(allServicesProvider);
+      ref.invalidate(activeServicesProvider);
+    }
   }
 
   void _snack(BuildContext context, String msg, {bool error = false}) {

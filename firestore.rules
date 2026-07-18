@@ -61,14 +61,16 @@ service cloud.firestore {
     match /analyses/{id} {
       allow read: if hasPerm('analyses.read');
       allow create, update: if hasPerm('analyses.write');
-      allow delete: if isSuper();
+      // Кто может править журнал — может и удалить ошибочную запись (UI и
+      // правила согласованы; правка уже позволяет менять любое поле).
+      allow delete: if hasPerm('analyses.write');
     }
 
     // ---- фиброскан ----
     match /fibroscan/{id} {
       allow read: if hasPerm('fibroscan.read');
       allow create, update: if hasPerm('fibroscan.write');
-      allow delete: if isSuper();
+      allow delete: if hasPerm('fibroscan.write');
     }
 
     // ---- склад: номенклатура ----
@@ -102,7 +104,12 @@ service cloud.firestore {
         && request.resource.data.items == resource.data.items
         && request.resource.data.day == resource.data.day
         && request.resource.data.method == resource.data.method
-        && request.resource.data.patient_name == resource.data.patient_name;
+        && request.resource.data.patient_name == resource.data.patient_name
+        && request.resource.data.created_by == resource.data.created_by
+        && request.resource.data.created_at == resource.data.created_at
+        && request.resource.data.get('patient_id', '')
+             == resource.data.get('patient_id', '')
+        && request.resource.data.get('mrn', '') == resource.data.get('mrn', '');
       allow delete: if isSuper();
     }
 
@@ -142,8 +149,11 @@ service cloud.firestore {
     }
 
     // ---- аудит (append-only) ----
+    // Создавать может только активный сотрудник и только от своего имени;
+    // редактировать/удалять нельзя (append-only журнал).
     match /audit/{doc} {
-      allow create: if isSignedIn();
+      allow create: if isActive()
+        && request.resource.data.created_by == request.auth.uid;
       allow read: if hasPerm('audit.read') || isSuper();
       allow update, delete: if false;
     }

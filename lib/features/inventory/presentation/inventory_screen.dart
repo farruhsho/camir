@@ -585,11 +585,16 @@ class _MovementDialogState extends ConsumerState<_MovementDialog> {
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
+    final first = DateTime(2000);
+    final last = DateTime(now.year + 1);
+    var initial = _parseDmy(_date.text) ?? now;
+    if (initial.isBefore(first)) initial = first;
+    if (initial.isAfter(last)) initial = last;
     final picked = await showDatePicker(
       context: context,
-      initialDate: _parseDmy(_date.text) ?? now,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(now.year + 1),
+      initialDate: initial,
+      firstDate: first,
+      lastDate: last,
       helpText: _isIn ? 'Дата прихода' : 'Дата расхода',
     );
     if (picked != null) setState(() => _date.text = _fmtDmy(picked));

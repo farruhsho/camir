@@ -68,7 +68,10 @@ class PaymentsScreen extends ConsumerWidget {
           IconButton(
             tooltip: 'Обновить',
             icon: const Icon(Icons.refresh, size: 20),
-            onPressed: () => ref.invalidate(todayPaymentsProvider),
+            onPressed: () {
+              ref.invalidate(todayPaymentsProvider);
+              ref.invalidate(todayRefundsProvider);
+            },
           ),
         ],
       ),

@@ -665,7 +665,11 @@ class _PatientEditDialogState extends ConsumerState<_PatientEditDialog> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  initialValue: _referral,
+                  // Защита от краша: если у карты направление вне справочника
+                  // (старые/чужие данные), не передаём его как initialValue.
+                  initialValue: kReferralLabels.containsKey(_referral)
+                      ? _referral
+                      : null,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Направление'),
                   items: [
