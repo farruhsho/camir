@@ -156,6 +156,6 @@ class FibroscanRepository {
 
 /// Список исследований для экрана (autoDispose — обновляется после создания /
 /// правки / удаления через invalidate).
-final fibroscanListProvider = FutureProvider.autoDispose<List<FibroscanRecord>>(
+final fibroscanListProvider = FutureProvider<List<FibroscanRecord>>(
   (ref) => ref.watch(fibroscanRepositoryProvider).list(),
 );

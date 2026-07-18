@@ -12,7 +12,7 @@ final staffRepositoryProvider = Provider<StaffRepository>(
 );
 
 /// Список сотрудников (только для супер-админа — гейт в firestore.rules и в UI).
-final staffListProvider = FutureProvider.autoDispose<List<StaffMember>>(
+final staffListProvider = FutureProvider<List<StaffMember>>(
   (ref) => ref.watch(staffRepositoryProvider).list(),
 );
 

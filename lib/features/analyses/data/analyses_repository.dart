@@ -186,6 +186,6 @@ class AnalysesRepository {
 
 /// Список анализов для экрана (autoDispose — обновляется через invalidate после
 /// создания записи).
-final analysesListProvider = FutureProvider.autoDispose<List<AnalysisRecord>>(
+final analysesListProvider = FutureProvider<List<AnalysisRecord>>(
   (ref) => ref.watch(analysesRepositoryProvider).list(),
 );

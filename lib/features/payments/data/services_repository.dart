@@ -9,12 +9,12 @@ final servicesRepositoryProvider = Provider<ServicesRepository>(
 );
 
 /// Активные услуги (для выбора в форме оплаты).
-final activeServicesProvider = FutureProvider.autoDispose<List<ServiceItem>>(
+final activeServicesProvider = FutureProvider<List<ServiceItem>>(
   (ref) => ref.watch(servicesRepositoryProvider).list(activeOnly: true),
 );
 
 /// Все услуги (для экрана управления прайс-листом).
-final allServicesProvider = FutureProvider.autoDispose<List<ServiceItem>>(
+final allServicesProvider = FutureProvider<List<ServiceItem>>(
   (ref) => ref.watch(servicesRepositoryProvider).list(),
 );
 

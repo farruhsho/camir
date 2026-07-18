@@ -9,14 +9,14 @@ final paymentsRepositoryProvider = Provider<PaymentsRepository>(
 );
 
 /// Платежи, СОЗДАННЫЕ сегодня (свежие сверху) — приход в кассу за день + список.
-final todayPaymentsProvider = FutureProvider.autoDispose<List<Payment>>(
+final todayPaymentsProvider = FutureProvider<List<Payment>>(
   (ref) => ref.watch(paymentsRepositoryProvider).listToday(),
 );
 
 /// Возвраты, оформленные СЕГОДНЯ (по `refund_day`) — расход из кассы за день.
 /// Отдельно от [todayPaymentsProvider], т.к. платёж могли создать вчера, а
 /// вернуть сегодня — деньги ушли из сегодняшней кассы.
-final todayRefundsProvider = FutureProvider.autoDispose<List<Payment>>(
+final todayRefundsProvider = FutureProvider<List<Payment>>(
   (ref) => ref.watch(paymentsRepositoryProvider).refundsToday(),
 );
 

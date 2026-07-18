@@ -45,8 +45,40 @@ String friendlyError(Object? error) {
     };
   }
 
-  // AuthException.toString() и прочие уже дают человеко-читаемый текст; на всякий
-  // случай срезаем возможный технический префикс вида `[plugin/code] `.
-  final text = error.toString().replaceFirst(RegExp(r'^\[[^\]]+\]\s*'), '');
+  // Fallback: тип не распознан. На Flutter web ошибки Firebase иногда приходят
+  // не типизированными (обёртка JS-Future «Dart exception thrown from converted
+  // Future…»), поэтому распознаём известные коды/слова прямо в тексте, чтобы
+  // сотрудник всё равно увидел понятное русское сообщение, а не англ. код.
+  final raw = error.toString();
+  final lower = raw.toLowerCase();
+  if (lower.contains('permission-denied') ||
+      lower.contains('insufficient permission')) {
+    return 'Недостаточно прав. Проверьте роль сотрудника и правила доступа '
+        'Firestore (см. README → Bootstrap).';
+  }
+  if (lower.contains('unauthenticated')) {
+    return 'Сессия истекла. Войдите заново.';
+  }
+  if (lower.contains('unavailable') ||
+      lower.contains('network') ||
+      lower.contains('offline')) {
+    return 'Нет связи с сервером. Проверьте интернет-соединение.';
+  }
+  if (lower.contains('failed-precondition') || lower.contains('index')) {
+    return 'Операция временно недоступна: возможно, ещё строится индекс '
+        'Firestore. Повторите чуть позже.';
+  }
+  if (lower.contains('not-found')) {
+    return 'Запись не найдена (возможно, уже удалена).';
+  }
+  if (lower.contains('converted future')) {
+    return 'Не удалось выполнить операцию. Проверьте доступ и соединение.';
+  }
+
+  // AuthException.toString() и прочие уже дают человеко-читаемый текст; срезаем
+  // возможный технический префикс вида `Error: ` / `[plugin/code] `.
+  final text = raw
+      .replaceFirst(RegExp(r'^Error:\s*'), '')
+      .replaceFirst(RegExp(r'^\[[^\]]+\]\s*'), '');
   return text.isEmpty ? 'Произошла ошибка. Повторите попытку.' : text;
 }

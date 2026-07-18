@@ -201,12 +201,11 @@ class WarehouseRepository {
 
 /// Товары с остатком для экрана (autoDispose — обновляется через invalidate
 /// после добавления товара или движения).
-final warehouseStockProvider = FutureProvider.autoDispose<List<ProductStock>>(
+final warehouseStockProvider = FutureProvider<List<ProductStock>>(
   (ref) => ref.watch(warehouseRepositoryProvider).listWithStock(),
 );
 
 /// Журнал всех движений склада (свежие сверху).
-final warehouseMovementsProvider =
-    FutureProvider.autoDispose<List<WarehouseMovement>>(
-      (ref) => ref.watch(warehouseRepositoryProvider).movements(),
-    );
+final warehouseMovementsProvider = FutureProvider<List<WarehouseMovement>>(
+  (ref) => ref.watch(warehouseRepositoryProvider).movements(),
+);

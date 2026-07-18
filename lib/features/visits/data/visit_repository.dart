@@ -143,6 +143,6 @@ class VisitRepository {
 /// Очередь на сегодня (все статусы, по возрастанию номера). autoDispose —
 /// обновляется через `invalidate` после регистрации/смены статуса. Экраны
 /// доски и регистратуры фильтруют статусы на клиенте.
-final todayVisitsProvider = FutureProvider.autoDispose<List<Visit>>(
+final todayVisitsProvider = FutureProvider<List<Visit>>(
   (ref) => ref.watch(visitRepositoryProvider).listToday(),
 );
