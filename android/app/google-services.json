@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "496482390503",
+    "project_id": "cadmir-erp",
+    "storage_bucket": "cadmir-erp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:496482390503:android:3cdee9c61fac8b8c8eed42",
+        "android_client_info": {
+          "package_name": "com.example.cadmir"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDxomwSrchIBLsVoKpDY9BkQsxY7vOSxCU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

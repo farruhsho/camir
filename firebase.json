@@ -1,0 +1,29 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "cadmir-erp",
+          "appId": "1:496482390503:android:3cdee9c61fac8b8c8eed42",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "cadmir-erp",
+          "configurations": {
+            "android": "1:496482390503:android:3cdee9c61fac8b8c8eed42",
+            "ios": "1:496482390503:ios:978e1d259611139d8eed42",
+            "macos": "1:496482390503:ios:978e1d259611139d8eed42",
+            "web": "1:496482390503:web:b272207372ec0b6e8eed42",
+            "windows": "1:496482390503:web:24669b3b4837d5628eed42"
+          }
+        }
+      }
+    }
+  }
+}

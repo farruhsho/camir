@@ -1,16 +1,168 @@
-# cadmir
+# Цадмир
 
-A new Flutter project.
+**Система управления гематологическим центром** (Кыргызстан). Регистратура,
+электронная очередь, картотека пациентов, анализы, фиброскан, складской учёт
+и роли — в одном приложении.
 
-## Getting Started
+Flutter (web · Android · iOS · desktop) поверх Firebase. Своего сервера нет:
+клиент работает с Firestore и Firebase Auth напрямую, права разграничены
+ролями и правилами безопасности Firestore.
 
-This project is a starting point for a Flutter application.
+Валюта — киргизский сом («сом»), телефоны в формате `+996…`, даты хранятся как
+ISO `ГГГГ-ММ-ДД` и показываются как `ДД.ММ.ГГГГ`.
 
-A few resources to get you started if this is your first Flutter project:
+---
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## Модули
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+| Модуль | Что делает |
+| --- | --- |
+| **Регистратура / Очередь** | Приём пациента: поиск по телефону (`+996…`), выбор существующей карты или создание новой, постановка в суточную очередь (`waiting → in_progress → completed`). Посуточный счётчик талонов. |
+| **Пациенты** | Картотека: поиск, дедуп по нормализованному телефону, создание и редактирование карт. |
+| **Анализы** | Лабораторные записи по пациенту: назначение, дозаполнение результата, правка, удаление. |
+| **Фиброскан** | Исследования фиброскана по пациенту с диагнозом и датой. |
+| **Склад** | Товары и движения (приход / списание), остатки, учёт по номенклатуре. |
+| **Роли и доступ** | Роли персонала → наборы permission-кодов; супер-админ имеет полный доступ. Дашборд с KPI. |
+
+Роли на этапе тестирования: **Ресепшен** (совмещённый фронт-офис с доступом ко
+всем модулям) и **Супер-админ** (`isSuperuser`, полный доступ).
+
+---
+
+## Стек
+
+- **Flutter** + **Material 3**, фирменные шрифты Manrope / Golos Text (bundled).
+- **Riverpod** — состояние и DI.
+- **go_router** — навигация и redirect по авторизации.
+- **freezed** + **json_serializable** — модели и сериализация (кодогенерация).
+- **Firebase**: **Cloud Firestore** (данные) + **Firebase Auth** (email/пароль).
+  Никакого собственного бэкенда и JWT-сервера.
+
+Тема оформления — «Clinic OS»: тёплый светлый холст, тиловый бренд, всегда
+тёмный сайдбар. Поддерживаются светлая и тёмная темы (`ThemeMode.system`
+подхватывает системную) — переключаются без перезапуска.
+
+---
+
+## Настройка (setup)
+
+Требуется установленный [Flutter SDK](https://docs.flutter.dev/get-started/install)
+(Dart `^3.10`), а также Firebase CLI и FlutterFire CLI:
+
+```bash
+npm install -g firebase-tools
+dart pub global activate flutterfire_cli
+```
+
+### 1. Подключить Firebase-проект
+
+```bash
+flutterfire configure
+```
+
+Генерирует `lib/firebase_options.dart` и `android/app/google-services.json`
+(и аналоги для iOS/macOS/Windows). Оба файла **не коммитятся** — они в
+`.gitignore`. Проект: `cadmir-erp` (или укажите свой).
+
+### 2. Зависимости
+
+```bash
+flutter pub get
+```
+
+### 3. Кодогенерация (freezed / json_serializable)
+
+```bash
+dart run build_runner build --delete-conflicting-outputs
+```
+
+Создаёт `*.freezed.dart` и `*.g.dart` для моделей.
+
+### 4. Правила и индексы Firestore
+
+```bash
+firebase deploy --only firestore:rules,firestore:indexes
+```
+
+Деплоит **боевые** правила из `firestore.rules` (ролевые, deny-by-default) и
+индексы из `firestore.indexes.json` (на них указывает `firebase.json`).
+
+### 5. Запуск
+
+```bash
+flutter run -d chrome     # web
+flutter run               # подключённое устройство / эмулятор
+```
+
+---
+
+## Безопасность и тестовые аккаунты
+
+- **`firestore.rules`** — боевые правила: доступ разграничен по ролям,
+  запрет по умолчанию. Деплоятся в продакшен.
+- **`firestore.rules.dev`** — **только для локальной разработки**: любой
+  аутентифицированный клиент читает/пишет всё. **Никогда не деплоить в прод.**
+  Удобно для эмулятора и демо быстрого входа.
+- **Быстрый вход (кнопки «Ресепшен» / «Супер-админ»)** — **только для
+  тестирования**. Использует фиксированные тестовые аккаунты
+  (`*@cadmir.local`), которые создаются на лету при открытых dev-правилах.
+  В продакшене их использовать нельзя — боевые правила запрещают такое
+  самообслуживание. Убедитесь, что тестовый вход отключён/недоступен в
+  релизной сборке.
+
+### Bootstrap продакшена (первый супер-админ)
+
+Боевые правила запрещают клиенту самому назначать себе роль, поэтому первого
+администратора заводят вручную:
+
+1. В **Firebase Console → Authentication** создайте учётную запись
+   супер-админа (email/пароль).
+2. В **Firestore** создайте документ `staff/{uid}` (где `uid` — идентификатор
+   этой учётки) с полями. **Важно:** супер-флаг клиент берёт ТОЛЬКО из
+   `is_superuser` (не из имени роли), поэтому поле обязательно:
+   ```json
+   {
+     "full_name": "Иванов И.И.",
+     "email": "admin@clinic.kg",
+     "role": "Супер-админ",
+     "is_superuser": true,
+     "disabled": false,
+     "created_at": "<serverTimestamp>"
+   }
+   ```
+3. Войдите этим аккаунтом → откройте раздел **«Сотрудники»** и заводите
+   персонал прямо из приложения (email, пароль, роль). Учётки создаются через
+   вторичное Firebase-приложение, поэтому ваша супер-админ-сессия не сбрасывается.
+
+Самостоятельная регистрация на экране входа создаёт **обезоруженный** аккаунт
+(без прав) — роль ему назначает супер-админ в «Сотрудниках». Без документа
+`staff/{uid}` (или при `disabled: true`) вход завершается понятной ошибкой.
+
+---
+
+## Go-live чек-лист
+
+- [ ] `flutterfire configure` выполнен; `firebase_options.dart` и
+      `google-services.json` на месте (и не в git).
+- [ ] `dart run build_runner build --delete-conflicting-outputs` прошёл без
+      ошибок (`*.freezed.dart` / `*.g.dart` актуальны).
+- [ ] В Firebase включён провайдер **Email/Password**.
+- [ ] Задеплоены **боевые** `firestore.rules` (НЕ `firestore.rules.dev`) и
+      `firestore.indexes.json`.
+- [ ] Заведён первый супер-админ (bootstrap выше).
+- [ ] Быстрый вход / тестовые аккаунты `*@cadmir.local` недоступны в релизе.
+- [ ] `flutter analyze` и `flutter test` — зелёные.
+- [ ] Релизная сборка собрана: `flutter build web` (или `apk` / `windows`).
+
+---
+
+## Разработка
+
+```bash
+flutter test        # юнит- и smoke-тесты (без плагинов/сети)
+flutter analyze     # статический анализ
+dart format .       # форматирование
+```
+
+Модели freezed после правки полей требуют повторного
+`dart run build_runner build --delete-conflicting-outputs`.

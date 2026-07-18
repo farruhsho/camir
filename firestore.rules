@@ -1,0 +1,128 @@
+rules_version = '2';
+
+// ПРОДАКШЕН-ПРАВИЛА «Цадмир» (проект cadmir-erp, europe-west1).
+//
+// Модель безопасности: deny-by-default + ролевой доступ. Роль и права
+// сотрудника хранятся в staff/{uid} (поля is_superuser, permissions[], role)
+// и пишутся сервером/консолью — клиент НЕ может выдать их себе (см. staff ниже).
+// Коды прав совпадают с lib/core/auth/role_catalog.dart и firestore.rules.
+//
+// Локальная разработка: используйте firestore.rules.dev (открытые правила),
+// прод деплоится строго с этого файла (см. firebase.json).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- helpers ----
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    // Есть ли у вошедшего профиль staff/{uid} (exists() защищает get() от
+    // ошибки на несуществующем документе — напр. при самрегистрации).
+    function hasStaff() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/staff/$(request.auth.uid));
+    }
+    // Профиль сотрудника, инициировавшего запрос (staff/{uid}).
+    function staffData() {
+      return get(/databases/$(database)/documents/staff/$(request.auth.uid)).data;
+    }
+    // Активный сотрудник с профилем и НЕ отключённый (disabled != true).
+    function isActive() {
+      return hasStaff() && staffData().disabled != true;
+    }
+    function isSuper() {
+      return isActive() && staffData().is_superuser == true;
+    }
+    // Есть ли у сотрудника право p (супер-админ имеет все права).
+    function hasPerm(p) {
+      return isActive() && (
+        staffData().is_superuser == true ||
+        (staffData().permissions is list && staffData().permissions.hasAny([p]))
+      );
+    }
+
+    // ---- пациенты ----
+    match /patients/{id} {
+      allow read: if hasPerm('patients.read');
+      allow create: if hasPerm('patients.create');
+      allow update: if hasPerm('patients.update');
+      allow delete: if isSuper();
+    }
+
+    // ---- визиты (регистратура/очередь) ----
+    match /visits/{id} {
+      allow read: if hasPerm('visits.read');
+      allow create: if hasPerm('visits.create');
+      allow update: if hasPerm('visits.update');
+      allow delete: if isSuper();
+    }
+
+    // ---- анализы ----
+    match /analyses/{id} {
+      allow read: if hasPerm('analyses.read');
+      allow create, update: if hasPerm('analyses.write');
+      allow delete: if isSuper();
+    }
+
+    // ---- фиброскан ----
+    match /fibroscan/{id} {
+      allow read: if hasPerm('fibroscan.read');
+      allow create, update: if hasPerm('fibroscan.write');
+      allow delete: if isSuper();
+    }
+
+    // ---- склад: номенклатура ----
+    match /products/{id} {
+      allow read: if hasPerm('inventory.read');
+      allow create, update: if hasPerm('inventory.manage');
+      allow delete: if isSuper();
+    }
+
+    // ---- склад: движения (приход/списание) ----
+    match /stock_movements/{id} {
+      allow read: if hasPerm('inventory.read');
+      allow create: if hasPerm('inventory.write_off') || hasPerm('inventory.manage');
+      allow update, delete: if isSuper();
+    }
+
+    // ---- счётчики (MRN / номер очереди) — нужны в транзакциях создания
+    // карты пациента и визита. Доступ только тем, кто реально создаёт записи,
+    // чтобы «обезоруженный» новый аккаунт не мог накручивать счётчики. ----
+    match /counters/{doc} {
+      allow read, write: if hasPerm('patients.create') || hasPerm('visits.create');
+    }
+
+    // ---- сотрудники ----
+    // Читать свой профиль может сам сотрудник; чужие — только супер-админ.
+    // Самостоятельная регистрация разрешена ТОЛЬКО «обезоруженной»: uid == свой,
+    // is_superuser == false и без прав. Повышение/правку делает супер-админ
+    // (через консоль). Это закрывает самоэскалацию привилегий.
+    match /staff/{uid} {
+      allow read: if request.auth.uid == uid || isSuper();
+      // Супер-админ заводит сотрудников из экрана «Сотрудники» (uid чужой).
+      // Самостоятельная регистрация — строго «обезоруженная»: свой uid,
+      // is_superuser=false, без прав И без роли (роль назначает супер-админ).
+      // Роль нельзя выставить себе — иначе клиент поднял бы себе доступ.
+      allow create: if isSuper()
+        || (request.auth.uid == uid
+            && request.resource.data.is_superuser == false
+            && (!('permissions' in request.resource.data)
+                || request.resource.data.permissions.size() == 0)
+            && (!('role' in request.resource.data)
+                || request.resource.data.role == ''));
+      allow update, delete: if isSuper();
+    }
+
+    // ---- аудит (append-only) ----
+    match /audit/{doc} {
+      allow create: if isSignedIn();
+      allow read: if hasPerm('audit.read') || isSuper();
+      allow update, delete: if false;
+    }
+
+    // ---- deny-by-default: всё остальное закрыто ----
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -123,4 +123,11 @@ app.*.symbols
 .vscode/
 *.iml
 *.ipr
-*.iws
+*.iws
+
+# Firebase config
+# lib/firebase_options.dart и android/app/google-services.json генерируются
+# командой `flutterfire configure` для проекта cadmir-erp. firebase_options.dart
+# намеренно НЕ игнорируется — он нужен, чтобы приложение собиралось сразу после
+# clone (в нём нет секретов, только публичные идентификаторы проекта).
+!lib/firebase_options.dart
