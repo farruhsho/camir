@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../clinics/data/clinics_repository.dart';
 import '../data/auth_repository.dart';
 import '../domain/auth_user.dart';
 
@@ -28,6 +29,11 @@ class AuthController extends Notifier<AuthState> {
 
   AuthRepository get _repo => ref.read(authRepositoryProvider);
 
+  /// Смена сессии (вход/восстановление/выход) меняет `ClinicScope.current` —
+  /// сбрасываем keep-alive-кэш документа активной клиники, чтобы сайдбар и
+  /// модульная навигация «перевоплотились» под клинику нового пользователя.
+  void _reloadClinicIdentity() => ref.invalidate(currentClinicProvider);
+
   /// On startup: if Firebase already has a signed-in user (and their staff
   /// profile resolves), go straight to authenticated; otherwise show login.
   Future<void> _restore() async {
@@ -40,12 +46,14 @@ class AuthController extends Notifier<AuthState> {
       // No session, missing profile, or offline — land on the login screen.
       state = const AuthState(AuthStatus.unauthenticated);
     }
+    _reloadClinicIdentity();
   }
 
   /// Throws [AuthException] on failure (handled by the login screen).
   Future<void> login(String email, String password) async {
     final user = await _repo.login(email, password);
     state = AuthState(AuthStatus.authenticated, user);
+    _reloadClinicIdentity();
   }
 
   /// Registers a new **neutered** staff account (no role, no permissions) and
@@ -57,6 +65,7 @@ class AuthController extends Notifier<AuthState> {
     // Новый аккаунт создан без прав — сразу выходим, доступ выдаёт админ.
     await _repo.logout();
     state = const AuthState(AuthStatus.unauthenticated);
+    _reloadClinicIdentity();
   }
 
   /// Быстрый вход по роли (для тестирования) — анонимный Firebase-вход + роль.
@@ -64,10 +73,12 @@ class AuthController extends Notifier<AuthState> {
   Future<void> loginAsRole(String role) async {
     final user = await _repo.loginAsRole(role);
     state = AuthState(AuthStatus.authenticated, user);
+    _reloadClinicIdentity();
   }
 
   Future<void> logout() async {
     await _repo.logout();
     state = const AuthState(AuthStatus.unauthenticated);
+    _reloadClinicIdentity();
   }
 }

@@ -9,6 +9,7 @@ import '../features/audit/presentation/audit_log_screen.dart';
 import '../features/auth/application/auth_controller.dart';
 import '../features/auth/domain/auth_user.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/clinics/data/clinics_repository.dart';
 import '../features/clinics/presentation/clinics_screen.dart';
 import '../features/dashboard/presentation/dashboard_screen.dart';
 import '../features/fibroscan/presentation/fibroscan_screen.dart';
@@ -77,21 +78,24 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-/// Role-aware home: the first shell destination this user may see
-/// (kAppDestinations order = priority). Falls back to /reception so an
-/// account with no nav permissions still lands somewhere harmless.
-String homeFor(AuthUser? user) {
-  for (final d in kAppDestinations) {
-    if (d.allowedFor(user)) return d.route;
-  }
-  return '/reception';
+/// Role-aware home: the first shell destination this user may see —
+/// permissions ∧ clinic modules (kAppDestinations order = priority), i.e. the
+/// same list AppShell renders in the nav. [modules] == null (clinic doc not
+/// loaded yet) skips the module filter. Falls back to /reception so an account
+/// with no nav permissions still lands somewhere harmless.
+String homeFor(AuthUser? user, [Set<String>? modules]) {
+  final allowed = allowedDestinations(user, modules);
+  return allowed.isEmpty ? '/reception' : allowed.first.route;
 }
 
 /// Bridges Riverpod auth state into GoRouter: re-evaluates redirects whenever
-/// the auth status changes.
+/// the auth status changes OR the active clinic doc (name/modules) resolves —
+/// so a user sitting on a module-disabled route is bounced as soon as the
+/// clinic loads, not only on the next manual navigation.
 class _RouterNotifier extends ChangeNotifier {
   _RouterNotifier(this._ref) {
     _ref.listen(authControllerProvider, (_, _) => notifyListeners());
+    _ref.listen(currentClinicProvider, (_, _) => notifyListeners());
   }
 
   final Ref _ref;
@@ -107,12 +111,22 @@ class _RouterNotifier extends ChangeNotifier {
         return loc == '/login' ? null : '/login';
       case AuthStatus.authenticated:
         final user = auth.user;
-        if (loc == '/login' || loc == '/splash') return homeFor(user);
-        // Permission guard: navigating to a screen the user may not see
-        // (deep link, stale bookmark) sends them home instead of a 403 page.
+        // Модули активной клиники: null, пока clinics/{id} не загружен —
+        // тогда модульный гард не применяется (только права, как раньше).
+        final modules = _ref.read(currentClinicProvider).valueOrNull?.modules;
+        if (loc == '/login' || loc == '/splash') return homeFor(user, modules);
+        // Permission ∧ module guard: navigating to a screen the user may not
+        // see or the clinic has disabled (deep link, stale bookmark) sends
+        // them home instead of a 403 page.
         for (final d in kAppDestinations) {
           if (loc == d.route || loc.startsWith('${d.route}/')) {
-            return d.allowedFor(user) ? null : homeFor(user);
+            final allowed =
+                d.allowedFor(user) && routeEnabledForModules(d.route, modules);
+            if (allowed) return null;
+            final home = homeFor(user, modules);
+            // Никогда не редиректим сами в себя (пустой набор прав/модулей):
+            // остаёмся на месте вместо цикла редиректов.
+            return home == loc ? null : home;
           }
         }
         return null;

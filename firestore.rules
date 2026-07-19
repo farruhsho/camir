@@ -213,31 +213,46 @@ service cloud.firestore {
     }
 
     // ---- сотрудники ----
-    // Читать свой профиль может сам сотрудник; чужие — супер-админ СВОЕЙ клиники
-    // или платформенный админ. Самостоятельная регистрация разрешена ТОЛЬКО
-    // «обезоруженной»: uid == свой, is_superuser == false и без прав/роли —
-    // клинику назначает супер-админ позже (у нового профиля прав нет, поэтому
-    // до назначения он не видит данных). Повышение/правку делает супер-админ
-    // своей клиники или платформенный админ. Это закрывает самоэскалацию.
+    // Читать свой профиль может сам сотрудник; ВСЕ профили — платформенный
+    // админ; клинический супер-админ — только сотрудников СВОЕЙ клиники.
+    // Самостоятельная регистрация разрешена ТОЛЬКО «обезоруженной»: uid == свой,
+    // is_superuser == false, без прав/роли, clinic_id == '' и без платформенного
+    // флага — клинику и роль назначает супер-админ позже (у нового профиля прав
+    // нет, поэтому до назначения он не видит данных). Клинический супер-админ
+    // заводит/правит/удаляет сотрудников ТОЛЬКО своей клиники и НЕ может ни
+    // выдать is_platform_admin, ни «увести» сотрудника в другую клинику —
+    // это закрывает самоэскалацию и межклиничные вмешательства.
     match /staff/{uid} {
       allow read: if request.auth.uid == uid
-        || (isSuper() && sameClinic())
-        || isPlatform();
-      // Платформенный админ заводит первого супер-админа клинике; супер-админ
-      // заводит сотрудников В СВОЮ клинику (createSameClinic). Самостоятельная
-      // регистрация — строго «обезоруженная»: свой uid, is_superuser=false, без
-      // прав И без роли (роль/клинику назначает супер-админ). Роль нельзя
-      // выставить себе — иначе клиент поднял бы себе доступ.
+        || isPlatform()
+        || (isSuper() && resource.data.clinic_id == myClinic());
+      // Платформенный админ заводит кого угодно; клинический супер-админ —
+      // только в свою клинику и без платформенного флага. Самостоятельная
+      // регистрация — строго «обезоруженная» (см. выше). Роль нельзя выставить
+      // себе — иначе клиент поднял бы себе доступ.
       allow create: if isPlatform()
-        || (isSuper() && createSameClinic())
+        || (isSuper()
+            && request.resource.data.clinic_id == myClinic()
+            && request.resource.data.get('is_platform_admin', false) != true)
         || (request.auth.uid == uid
             && request.resource.data.is_superuser == false
             && (!('permissions' in request.resource.data)
                 || request.resource.data.permissions.size() == 0)
             && (!('role' in request.resource.data)
-                || request.resource.data.role == ''));
-      allow update: if isPlatform() || (isSuper() && sameClinic());
-      allow delete: if isPlatform() || (isSuper() && sameClinic());
+                || request.resource.data.role == '')
+            && request.resource.data.get('clinic_id', '') == ''
+            && request.resource.data.get('is_platform_admin', false) != true);
+      // Правка супером: только своя клиника; платформенный флаг и клиника
+      // сотрудника при этом НЕ меняются (get с дефолтом — поля могло не быть).
+      allow update: if isPlatform()
+        || (isSuper()
+            && resource.data.clinic_id == myClinic()
+            && request.resource.data.get('is_platform_admin', false)
+                 == resource.data.get('is_platform_admin', false)
+            && request.resource.data.get('clinic_id', '')
+                 == resource.data.get('clinic_id', ''));
+      allow delete: if isPlatform()
+        || (isSuper() && resource.data.clinic_id == myClinic());
     }
 
     // ---- аудит (append-only) ----

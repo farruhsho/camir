@@ -12,6 +12,7 @@ class StaffMember {
     required this.email,
     required this.fullName,
     required this.role,
+    this.clinicId = '',
     this.isSuperuser = false,
     this.disabled = false,
     this.createdAt,
@@ -24,6 +25,10 @@ class StaffMember {
 
   /// Роль (значение из `kCadmirRoles`) либо пустая строка — «без роли».
   final String role;
+
+  /// Клиника сотрудника (`clinics/{id}`). Пустая строка — у старых профилей,
+  /// заведённых до мульти-клиничности (бэкфилл назначает `default`).
+  final String clinicId;
 
   /// Полный доступ (проставляется только супер-админом/в консоли).
   final bool isSuperuser;
@@ -41,7 +46,8 @@ class StaffMember {
       return email.isNotEmpty ? email[0].toUpperCase() : '—';
     }
     if (parts.length == 1) {
-      return parts.first.substring(0, parts.first.length >= 2 ? 2 : 1)
+      return parts.first
+          .substring(0, parts.first.length >= 2 ? 2 : 1)
           .toUpperCase();
     }
     return (parts[0][0] + parts[1][0]).toUpperCase();
@@ -66,6 +72,7 @@ class StaffMember {
       email: map['email']?.toString() ?? '',
       fullName: map['full_name']?.toString() ?? '',
       role: map['role']?.toString() ?? '',
+      clinicId: map['clinic_id']?.toString() ?? '',
       isSuperuser: map['is_superuser'] == true,
       disabled: map['disabled'] == true,
       createdAt: readTs(map['created_at']),

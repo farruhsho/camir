@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../../core/auth/role_catalog.dart';
 import '../../../firebase_options.dart';
 import '../../audit/data/audit_repository.dart';
@@ -12,7 +13,8 @@ final staffRepositoryProvider = Provider<StaffRepository>(
   (ref) => StaffRepository(FirebaseFirestore.instance, FirebaseAuth.instance),
 );
 
-/// Список сотрудников (только для супер-админа — гейт в firestore.rules и в UI).
+/// Список сотрудников: платформенный админ — все клиники, клинический
+/// супер-админ — только своя (гейт в firestore.rules и в UI).
 final staffListProvider = FutureProvider<List<StaffMember>>(
   (ref) => ref.watch(staffRepositoryProvider).list(),
 );
@@ -35,12 +37,18 @@ class StaffRepository {
   CollectionReference<Map<String, dynamic>> get _staff =>
       _db.collection('staff');
 
-  /// Все сотрудники, свежие сверху. Читает только супер-админ (иначе правила
-  /// вернут permission-denied). Сортируем на КЛИЕНТЕ, а не через
-  /// `orderBy('created_at')`, — иначе документы без этого поля (напр. первый
-  /// супер-админ, заведённый вручную в консоли) выпали бы из списка.
+  /// Сотрудники, свежие сверху. Платформенный администратор видит ВСЕХ (без
+  /// фильтра); клинический супер-админ — только СВОЮ клинику (фильтр по
+  /// `clinic_id`; правила Firestore дублируют это на сервере). Сортируем на
+  /// КЛИЕНТЕ, а не через `orderBy('created_at')`, — иначе документы без этого
+  /// поля (напр. первый супер-админ, заведённый вручную в консоли) выпали бы
+  /// из списка.
   Future<List<StaffMember>> list() async {
-    final snap = await _staff.get();
+    Query<Map<String, dynamic>> query = _staff;
+    if (!ClinicScope.isPlatformAdmin) {
+      query = query.where('clinic_id', isEqualTo: ClinicScope.current);
+    }
+    final snap = await query.get();
     final items = snap.docs
         .map((d) => StaffMember.fromMap({...d.data(), 'uid': d.id}))
         .toList();
@@ -55,16 +63,19 @@ class StaffRepository {
     return items;
   }
 
-  /// Заводит сотрудника: создаёт Auth-аккаунт во вторичном приложении и пишет
-  /// профиль staff/{uid}. Если запись профиля не удалась — ОТКАТывает
-  /// осиротевший Auth-аккаунт (иначе email навсегда «занят», а завести его из
-  /// клиента повторно нельзя — нет Admin SDK). Возвращает [StaffMember];
-  /// бросает [StaffException] с RU-текстом при ошибке.
+  /// Заводит сотрудника В КЛИНИКУ [clinicId]: создаёт Auth-аккаунт во вторичном
+  /// приложении и пишет профиль staff/{uid} с полем `clinic_id`. Клинический
+  /// супер-админ может передать только свою клинику (правила отвергнут чужую);
+  /// платформенный администратор — любую. Если запись профиля не удалась —
+  /// ОТКАТывает осиротевший Auth-аккаунт (иначе email навсегда «занят», а
+  /// завести его из клиента повторно нельзя — нет Admin SDK). Возвращает
+  /// [StaffMember]; бросает [StaffException] с RU-текстом при ошибке.
   Future<StaffMember> createStaff({
     required String email,
     required String password,
     required String fullName,
     required String role,
+    required String clinicId,
   }) async {
     final normEmail = email.trim();
     final normName = fullName.trim();
@@ -89,6 +100,7 @@ class StaffRepository {
           'permissions': permissions,
           'is_superuser': isSuper,
           'disabled': false,
+          'clinic_id': clinicId,
           'created_at': FieldValue.serverTimestamp(),
           'created_by': createdBy,
         });
@@ -118,6 +130,7 @@ class StaffRepository {
         email: normEmail,
         fullName: normName,
         role: role,
+        clinicId: clinicId,
         isSuperuser: isSuper,
       );
     } on FirebaseAuthException catch (e) {

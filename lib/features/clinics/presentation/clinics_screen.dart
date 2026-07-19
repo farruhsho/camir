@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_types.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/widgets/async_value_widget.dart';
@@ -89,6 +90,8 @@ class ClinicsScreen extends ConsumerWidget {
                             onToggleActive: () =>
                                 _toggleActive(context, ref, c),
                             onAddAdmin: () => _addAdmin(context, ref, c),
+                            onEditModules: () => _editModules(context, ref, c),
+                            onEdit: () => _editClinic(context, ref, c),
                           ),
                       ],
                     ),
@@ -156,6 +159,42 @@ class ClinicsScreen extends ConsumerWidget {
     }
   }
 
+  /// «Модули» — тумблеры включённых функций клиники.
+  Future<void> _editModules(
+    BuildContext context,
+    WidgetRef ref,
+    Clinic c,
+  ) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (_) => _ModulesDialog(clinic: c),
+    );
+    if (saved == true && context.mounted) {
+      ref.invalidate(clinicsProvider);
+      // Если правили СВОЮ клинику — сайдбар должен перечитать модули.
+      ref.invalidate(currentClinicProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Модули клиники «${c.name}» сохранены.')),
+      );
+    }
+  }
+
+  /// «Переименовать / сменить тип» — правка названия и профиля клиники.
+  Future<void> _editClinic(
+    BuildContext context,
+    WidgetRef ref,
+    Clinic c,
+  ) async {
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (_) => _EditClinicDialog(clinic: c),
+    );
+    if (saved == true && context.mounted) {
+      ref.invalidate(clinicsProvider);
+      ref.invalidate(currentClinicProvider);
+    }
+  }
+
   Future<void> _toggleActive(
     BuildContext context,
     WidgetRef ref,
@@ -195,11 +234,15 @@ class _ClinicTile extends StatelessWidget {
     required this.clinic,
     required this.onToggleActive,
     required this.onAddAdmin,
+    required this.onEditModules,
+    required this.onEdit,
   });
 
   final Clinic clinic;
   final VoidCallback onToggleActive;
   final VoidCallback onAddAdmin;
+  final VoidCallback onEditModules;
+  final VoidCallback onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -227,6 +270,16 @@ class _ClinicTile extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
+                    '${clinic.typeInfo.label} · ${clinic.subtitle}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      color: AppColors.sub,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
                     'ID: ${clinic.id}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -247,12 +300,19 @@ class _ClinicTile extends StatelessWidget {
               icon: const Icon(Icons.more_vert, color: AppColors.sub),
               onSelected: (v) {
                 if (v == 'admin') onAddAdmin();
+                if (v == 'modules') onEditModules();
+                if (v == 'edit') onEdit();
                 if (v == 'active') onToggleActive();
               },
               itemBuilder: (_) => [
                 const PopupMenuItem(
                   value: 'admin',
                   child: Text('Добавить администратора'),
+                ),
+                const PopupMenuItem(value: 'modules', child: Text('Модули')),
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: Text('Переименовать / сменить тип'),
                 ),
                 PopupMenuItem(
                   value: 'active',
@@ -287,12 +347,25 @@ void _showClinicDetail(BuildContext context, Clinic c) {
     title: c.name.isEmpty ? c.id : c.name,
     rows: [
       DetailRow('Название', c.name),
+      DetailRow('Тип', c.typeInfo.label),
+      DetailRow('Специальность', c.subtitle),
       DetailRow('Статус', c.active ? 'Активна' : 'Неактивна', strong: true),
+      DetailRow.section('Модули'),
+      DetailRow('Включены', _modulesLabel(c.modules)),
       DetailRow.section('Служебное'),
       DetailRow('Создана', _fmtClinicTs(c.createdAt)),
       DetailRow('ID', c.id),
     ],
   );
+}
+
+/// Включённые модули в каноническом порядке [kAllModules], русскими подписями.
+String _modulesLabel(Set<String> modules) {
+  final labels = kAllModules
+      .where(modules.contains)
+      .map((m) => kModuleLabels[m] ?? m)
+      .toList();
+  return labels.isEmpty ? 'все выключены' : labels.join(', ');
 }
 
 /// Форматирует таймстамп как `ДД.ММ.ГГГГ ЧЧ:ММ` (или пустую строку — тогда
@@ -315,6 +388,7 @@ class _NewClinicDialog extends ConsumerStatefulWidget {
 class _NewClinicDialogState extends ConsumerState<_NewClinicDialog> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
+  String _type = kClinicTypes.first.key;
   bool _saving = false;
 
   @override
@@ -329,7 +403,7 @@ class _NewClinicDialogState extends ConsumerState<_NewClinicDialog> {
     try {
       final id = await ref
           .read(clinicsRepositoryProvider)
-          .create(name: _name.text);
+          .create(name: _name.text, type: _type);
       if (mounted) {
         Navigator.pop(context, (id: id, name: _name.text.trim()));
       }
@@ -354,16 +428,44 @@ class _NewClinicDialogState extends ConsumerState<_NewClinicDialog> {
         width: 380,
         child: Form(
           key: _formKey,
-          child: TextFormField(
-            controller: _name,
-            autofocus: true,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Название клиники',
-              isDense: true,
-            ),
-            validator: (v) =>
-                (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                controller: _name,
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'Название клиники',
+                  isDense: true,
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Обязательное поле'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _type,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Тип клиники',
+                  isDense: true,
+                ),
+                items: [
+                  for (final t in kClinicTypes)
+                    DropdownMenuItem(value: t.key, child: Text(t.label)),
+                ],
+                onChanged: (v) =>
+                    setState(() => _type = v ?? kClinicTypes.first.key),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Тип задаёт специальность в сайдбаре и набор включённых '
+                'модулей (можно поменять позже через «Модули»).',
+                style: TextStyle(fontSize: 12, color: AppColors.sub),
+              ),
+            ],
           ),
         ),
       ),
@@ -528,6 +630,233 @@ class _NewClinicAdminDialogState extends ConsumerState<_NewClinicAdminDialog> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Text('Создать'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Диалог «Модули» — тумблер на каждый модуль из [kAllModules]. Сохраняет
+/// через `setModules` и возвращает `true` (родитель перечитывает провайдеры).
+class _ModulesDialog extends ConsumerStatefulWidget {
+  const _ModulesDialog({required this.clinic});
+
+  final Clinic clinic;
+
+  @override
+  ConsumerState<_ModulesDialog> createState() => _ModulesDialogState();
+}
+
+class _ModulesDialogState extends ConsumerState<_ModulesDialog> {
+  late final Set<String> _enabled = {...widget.clinic.modules};
+  bool _saving = false;
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await ref
+          .read(clinicsRepositoryProvider)
+          .setModules(widget.clinic.id, _enabled);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(friendlyError(e)),
+            backgroundColor: AppColors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Модули клиники'),
+      content: SizedBox(
+        width: 400,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                widget.clinic.name,
+                style: const TextStyle(fontSize: 12.5, color: AppColors.sub),
+              ),
+              const SizedBox(height: 8),
+              for (final m in kAllModules)
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(kModuleLabels[m] ?? m),
+                  value: _enabled.contains(m),
+                  onChanged: _saving
+                      ? null
+                      : (on) => setState(() {
+                          if (on) {
+                            _enabled.add(m);
+                          } else {
+                            _enabled.remove(m);
+                          }
+                        }),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: _saving ? null : _save,
+          child: _saving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Сохранить'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Диалог «Переименовать / сменить тип». При смене типа предупреждает (через
+/// confirmDialog), что подзаголовок и модули будут сброшены на шаблон нового
+/// типа. Возвращает `true`, если изменения сохранены.
+class _EditClinicDialog extends ConsumerStatefulWidget {
+  const _EditClinicDialog({required this.clinic});
+
+  final Clinic clinic;
+
+  @override
+  ConsumerState<_EditClinicDialog> createState() => _EditClinicDialogState();
+}
+
+class _EditClinicDialogState extends ConsumerState<_EditClinicDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _name = TextEditingController(
+    text: widget.clinic.name,
+  );
+  late String _type = widget.clinic.type;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+    final typeChanged = _type != widget.clinic.type;
+    if (typeChanged) {
+      final newType = clinicTypeFor(_type);
+      final ok = await confirmDialog(
+        context,
+        title: 'Сменить тип клиники?',
+        message:
+            'Тип станет «${newType.label}». Подзаголовок и набор модулей '
+            'будут СБРОШЕНЫ на шаблон нового типа (ручную настройку модулей '
+            'придётся повторить).',
+        confirmLabel: 'Сменить тип',
+      );
+      if (!ok || !mounted) return;
+    }
+    setState(() => _saving = true);
+    try {
+      await ref
+          .read(clinicsRepositoryProvider)
+          .updateClinic(
+            widget.clinic.id,
+            name: _name.text,
+            // Тип передаём только при реальной смене — чтобы не сбрасывать
+            // ручную настройку модулей при простом переименовании.
+            type: typeChanged ? _type : null,
+          );
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(friendlyError(e)),
+            backgroundColor: AppColors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Клиника — название и тип'),
+      content: SizedBox(
+        width: 380,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                controller: _name,
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(
+                  labelText: 'Название клиники',
+                  isDense: true,
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Обязательное поле'
+                    : null,
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _type,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Тип клиники',
+                  isDense: true,
+                ),
+                items: [
+                  for (final t in kClinicTypes)
+                    DropdownMenuItem(value: t.key, child: Text(t.label)),
+                ],
+                onChanged: (v) =>
+                    setState(() => _type = v ?? widget.clinic.type),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Смена типа сбросит подзаголовок и модули на шаблон нового '
+                'типа.',
+                style: TextStyle(fontSize: 12, color: AppColors.sub),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: _saving ? null : _save,
+          child: _saving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Сохранить'),
         ),
       ],
     );

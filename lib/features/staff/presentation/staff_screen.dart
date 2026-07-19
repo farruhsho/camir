@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../../core/auth/role_catalog.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
@@ -9,6 +10,8 @@ import '../../../core/widgets/confirm_dialog.dart';
 import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
+import '../../clinics/data/clinics_repository.dart';
+import '../../clinics/domain/clinic.dart';
 import '../data/staff_repository.dart';
 import '../domain/staff_member.dart';
 
@@ -46,6 +49,21 @@ class StaffScreen extends ConsumerWidget {
     }
 
     final staff = ref.watch(staffListProvider);
+    // Платформенный админ видит сотрудников ВСЕХ клиник — подписываем каждую
+    // плитку названием клиники (clinic_id -> имя из реестра, иначе сырой id).
+    final isPlatform = ClinicScope.isPlatformAdmin;
+    final clinicNames = <String, String>{
+      if (isPlatform)
+        for (final c
+            in ref.watch(clinicsProvider).valueOrNull ?? const <Clinic>[])
+          c.id: c.name,
+    };
+    String? clinicLabelOf(StaffMember s) {
+      if (!isPlatform) return null;
+      if (s.clinicId.isEmpty) return 'без клиники';
+      return clinicNames[s.clinicId] ?? s.clinicId;
+    }
+
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -91,6 +109,7 @@ class StaffScreen extends ConsumerWidget {
                           _StaffTile(
                             staff: s,
                             isSelf: s.uid == user.id,
+                            clinicLabel: clinicLabelOf(s),
                             onChangeRole: () => _changeRole(context, ref, s),
                             onToggleDisabled: () =>
                                 _toggleDisabled(context, ref, s),
@@ -213,10 +232,16 @@ class _StaffTile extends StatelessWidget {
     required this.isSelf,
     required this.onChangeRole,
     required this.onToggleDisabled,
+    this.clinicLabel,
   });
 
   final StaffMember staff;
   final bool isSelf;
+
+  /// Название клиники сотрудника — показывается ТОЛЬКО платформенному
+  /// администратору (у клинического супера весь список — его клиника).
+  final String? clinicLabel;
+
   final VoidCallback onChangeRole;
   final VoidCallback onToggleDisabled;
 
@@ -226,7 +251,12 @@ class _StaffTile extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 10),
       child: AppCard(
         padding: const EdgeInsets.all(14),
-        onTap: () => _showStaffDetail(context, staff, isSelf: isSelf),
+        onTap: () => _showStaffDetail(
+          context,
+          staff,
+          isSelf: isSelf,
+          clinicLabel: clinicLabel,
+        ),
         child: Row(
           children: [
             InitialsAvatar(staff.initials, size: 42),
@@ -265,7 +295,10 @@ class _StaffTile extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 6),
-                  Row(
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       StatusBadge(
                         staff.displayRole,
@@ -275,10 +308,10 @@ class _StaffTile extends StatelessWidget {
                                   ? BadgeKind.neutral
                                   : BadgeKind.success),
                       ),
-                      if (staff.disabled) ...[
-                        const SizedBox(width: 6),
+                      if (staff.disabled)
                         const StatusBadge('Отключён', kind: BadgeKind.danger),
-                      ],
+                      if (clinicLabel != null && clinicLabel!.isNotEmpty)
+                        Pill(label: clinicLabel!),
                     ],
                   ),
                 ],
@@ -316,6 +349,7 @@ void _showStaffDetail(
   BuildContext context,
   StaffMember s, {
   required bool isSelf,
+  String? clinicLabel,
 }) {
   showDetailSheet(
     context,
@@ -324,6 +358,8 @@ void _showStaffDetail(
       DetailRow('ФИО', s.fullName),
       DetailRow('Email', s.email),
       DetailRow('Роль', s.displayRole, strong: true),
+      // Пустое значение скрывается — строка видна только платформенному админу.
+      DetailRow('Клиника', clinicLabel ?? ''),
       DetailRow('Супер-админ', s.isSuperuser ? 'Да' : 'Нет'),
       DetailRow('Доступ', s.disabled ? 'Отключён' : 'Активен'),
       if (isSelf) DetailRow('Это вы', 'Да'),
@@ -359,6 +395,12 @@ class _AddStaffDialogState extends ConsumerState<_AddStaffDialog> {
   // По умолчанию — «без роли»: доступ к данным сотрудник получает только когда
   // супер-админ осознанно выберет роль (а не проскочит диалог на «Создать»).
   String _role = '';
+
+  // Клиника нового сотрудника. Платформенный админ выбирает её в выпадашке
+  // (по умолчанию — своя); клинический супер выпадашки не видит — сотрудник
+  // всегда заводится в ЕГО клинику (ClinicScope.current).
+  String? _clinicId = ClinicScope.current;
+
   bool _saving = false;
   bool _obscure = true;
 
@@ -372,6 +414,18 @@ class _AddStaffDialogState extends ConsumerState<_AddStaffDialog> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+    final clinicId = ClinicScope.isPlatformAdmin
+        ? (_clinicId ?? ClinicScope.current ?? '')
+        : (ClinicScope.current ?? '');
+    if (clinicId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Не выбрана клиника для нового сотрудника.'),
+          backgroundColor: AppColors.red,
+        ),
+      );
+      return;
+    }
     setState(() => _saving = true);
     try {
       await ref
@@ -381,6 +435,7 @@ class _AddStaffDialogState extends ConsumerState<_AddStaffDialog> {
             password: _password.text,
             fullName: _fullName.text,
             role: _role,
+            clinicId: clinicId,
           );
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -394,6 +449,54 @@ class _AddStaffDialogState extends ConsumerState<_AddStaffDialog> {
         );
       }
     }
+  }
+
+  /// Выпадашка «Клиника» (только у платформенного админа): активные клиники из
+  /// реестра; по умолчанию — собственная клиника админа, иначе первая активная.
+  /// Строится ТОЛЬКО после загрузки списка — так `initialValue` гарантированно
+  /// присутствует среди items (иначе Dropdown падает на ассерте).
+  Widget _clinicField() {
+    final clinicsAsync = ref.watch(clinicsProvider);
+    return clinicsAsync.when(
+      data: (clinics) {
+        final active = clinics.where((c) => c.active).toList();
+        if (active.isEmpty) {
+          return const Text(
+            'Нет активных клиник — сначала создайте клинику.',
+            style: TextStyle(fontSize: 12.5, color: AppColors.sub),
+          );
+        }
+        final ids = <String>{for (final c in active) c.id};
+        if (_clinicId == null || !ids.contains(_clinicId)) {
+          // Прямое присваивание (без setState): значение используется тут же,
+          // в этом же build.
+          _clinicId = ids.contains(ClinicScope.current)
+              ? ClinicScope.current
+              : active.first.id;
+        }
+        return DropdownButtonFormField<String>(
+          initialValue: _clinicId,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'Клиника',
+            isDense: true,
+          ),
+          items: [
+            for (final c in active)
+              DropdownMenuItem(value: c.id, child: Text(c.name)),
+          ],
+          onChanged: (v) => setState(() => _clinicId = v),
+        );
+      },
+      loading: () => const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: LinearProgressIndicator(minHeight: 2),
+      ),
+      error: (e, _) => Text(
+        friendlyError(e),
+        style: const TextStyle(fontSize: 12.5, color: AppColors.red),
+      ),
+    );
   }
 
   @override
@@ -455,6 +558,10 @@ class _AddStaffDialogState extends ConsumerState<_AddStaffDialog> {
                 validator: (v) =>
                     (v == null || v.length < 6) ? 'Минимум 6 символов' : null,
               ),
+              if (ClinicScope.isPlatformAdmin) ...[
+                const SizedBox(height: 12),
+                _clinicField(),
+              ],
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
                 initialValue: _role,

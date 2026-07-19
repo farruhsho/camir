@@ -4,6 +4,9 @@ import 'package:go_router/go_router.dart';
 
 import '../../features/auth/application/auth_controller.dart';
 import '../../features/auth/domain/auth_user.dart';
+import '../../features/clinics/data/clinics_repository.dart';
+import '../../features/clinics/domain/clinic.dart';
+import '../auth/clinic_types.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
 import 'cadmir_logo.dart';
@@ -148,6 +151,44 @@ const kAppDestinations = <AppDestination>[
   ),
 ];
 
+/// Карта «маршрут → ключ модуля клиники» — ЕДИНЫЙ источник и для фильтрации
+/// меню (AppShell), и для module-гарда роутера (router.dart). Маршруты БЕЗ
+/// записи здесь (/staff, /clinics) — структурные: гейтятся только правами и не
+/// отключаются модулями клиники. Оба справочника (/analysis-types и
+/// /fibroscan-refs) — один модуль «Справочники» ([kModCatalog]).
+const Map<String, String> kRouteModule = <String, String>{
+  '/dashboard': kModDashboard,
+  '/reception': kModReception,
+  '/patients': kModPatients,
+  '/analyses': kModAnalyses,
+  '/fibroscan': kModFibroscan,
+  '/inventory': kModInventory,
+  '/payments': kModPayments,
+  '/audit': kModAudit,
+  '/analysis-types': kModCatalog,
+  '/fibroscan-refs': kModCatalog,
+};
+
+/// Разрешён ли [route] модулями активной клиники. [modules] == null означает
+/// «документ клиники ещё не загружен» — модульный фильтр НЕ применяем (ведём
+/// себя как раньше, чтобы навигация не мигала на время загрузки).
+bool routeEnabledForModules(String route, Set<String>? modules) {
+  final module = kRouteModule[route];
+  if (module == null) return true; // структурный раздел — не гейтится модулями
+  if (modules == null) return true; // клиника не загружена — без фильтра
+  return modules.contains(module);
+}
+
+/// Итоговый список пунктов навигации: права пользователя ∧ модули клиники.
+/// Используется и сайдбаром/нижней навигацией (AppShell), и homeFor роутера —
+/// чтобы «домашний» экран всегда был реально видимым пунктом меню.
+List<AppDestination> allowedDestinations(AuthUser? user, Set<String>? modules) {
+  return [
+    for (final d in kAppDestinations)
+      if (d.allowedFor(user) && routeEnabledForModules(d.route, modules)) d,
+  ];
+}
+
 String _initialsOf(String name) {
   final parts = name.trim().split(RegExp(r'\s+'));
   if (parts.isEmpty || parts.first.isEmpty) return '—';
@@ -180,11 +221,12 @@ class AppShell extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authControllerProvider).user;
+    // Активная клиника: имя/подзаголовок для шапки сайдбара + набор включённых
+    // модулей. Пока документ не загружен (или клиника не назначена) — null:
+    // фильтруем только по правам, как раньше (без мигания меню).
+    final clinic = ref.watch(currentClinicProvider).valueOrNull;
 
-    final destinations = [
-      for (final d in kAppDestinations)
-        if (d.allowedFor(user)) d,
-    ];
+    final destinations = allowedDestinations(user, clinic?.modules);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -203,6 +245,7 @@ class AppShell extends ConsumerWidget {
                 location: location,
                 destinations: destinations,
                 user: user,
+                clinic: clinic,
               ),
               Expanded(child: child),
             ],
@@ -297,17 +340,31 @@ class _Sidebar extends ConsumerWidget {
     required this.location,
     required this.destinations,
     required this.user,
+    required this.clinic,
   });
 
   final String location;
   final List<AppDestination> destinations;
   final AuthUser? user;
 
+  /// Активная клиника — её имя и специальность показываются в шапке сайдбара.
+  /// null, пока документ клиники загружается (тогда — нейтральный бренд).
+  final Clinic? clinic;
+
   bool _isActive(AppDestination d) =>
       location == d.route || location.startsWith('${d.route}/');
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Идентичность активной клиники: имя + специальность (subtitle типа).
+    // Пока клиника не загружена — нейтральный бренд платформы.
+    final clinicName = (clinic?.name ?? '').trim();
+    final title = clinicName.isEmpty ? 'Цадмир' : clinicName;
+    final clinicSubtitle = (clinic?.subtitle ?? '').trim();
+    final subtitle = clinicSubtitle.isEmpty
+        ? 'Медицинская платформа'
+        : clinicSubtitle;
+
     return Container(
       width: 248,
       decoration: const BoxDecoration(gradient: AppColors.sidebarGradient),
@@ -326,13 +383,16 @@ class _Sidebar extends ConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Цадмир',
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: AppTypography.number(17, color: Colors.white),
                         ),
-                        const Text(
-                          'Гематологический центр',
+                        Text(
+                          subtitle,
                           maxLines: 2,
-                          style: TextStyle(
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
                             color: AppColors.sidebarSub,
                             fontSize: 10.5,
                             letterSpacing: 0.4,
