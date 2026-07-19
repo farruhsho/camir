@@ -15,7 +15,25 @@ import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
 import '../data/fibroscan_repository.dart';
 import '../domain/fibroscan_record.dart';
+import 'fibroscan_journal_pdf.dart';
 import 'fibroscan_pdf.dart';
+
+/// Период журнального отчёта по фиброскану (app-bar «Отчёт / Экспорт»).
+/// По умолчанию — [today] (сегодня).
+enum _JournalPeriod {
+  today('Сегодня', 0),
+  week('За 7 дней', 6),
+  month('За 30 дней', 29);
+
+  const _JournalPeriod(this.label, this.daysBack);
+
+  /// Человекочитаемая метка для меню и шапки PDF.
+  final String label;
+
+  /// На сколько дней назад от сегодня начинается период (включительно):
+  /// 0 — только сегодня, 6 — окно из 7 дней, 29 — окно из 30 дней.
+  final int daysBack;
+}
 
 /// Журнал исследований на фиброскане: список записей + форма записи
 /// (ФИО · год рождения · дата · диагноз из справочника из 6). Пациента можно
@@ -286,6 +304,43 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
     }
   }
 
+  // ── Журнальный отчёт за период ───────────────────────────────────────────────
+
+  /// Строит и открывает журнальный PDF (таблица исследований за [period]:
+  /// сегодня / 7 дней / 30 дней) с превью/печатью/сохранением. Записи берутся
+  /// диапазонным запросом по `date` (без составного индекса). [refs] — для
+  /// стадии фиброза / степени стеатоза в колонках таблицы.
+  Future<void> _exportJournal(
+    _JournalPeriod period,
+    List<FibroRef> refs,
+  ) async {
+    final now = DateTime.now();
+    final to = DateTime(now.year, now.month, now.day);
+    final from = to.subtract(Duration(days: period.daysBack));
+    try {
+      final records = await ref
+          .read(fibroscanRepositoryProvider)
+          .listForPeriod(_iso(from), _iso(to));
+      if (!mounted) return;
+      if (records.isEmpty) {
+        _snack(
+          'За выбранный период (${period.label.toLowerCase()}) '
+          'исследований нет',
+        );
+        return;
+      }
+      await printFibroscanJournal(
+        records: records,
+        refs: refs,
+        periodLabel: period.label,
+        from: from,
+        to: to,
+      );
+    } catch (e) {
+      if (mounted) _snack(friendlyError(e), error: true);
+    }
+  }
+
   // ── Сохранение ───────────────────────────────────────────────────────────────
 
   void _snack(String message, {bool error = false}) {
@@ -413,7 +468,31 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
     final form = _formSection(refs);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Фиброскан')),
+      appBar: AppBar(
+        title: const Text('Фиброскан'),
+        actions: [
+          PopupMenuButton<_JournalPeriod>(
+            tooltip: 'Отчёт / Экспорт',
+            icon: const Icon(Icons.summarize_outlined),
+            onSelected: (p) => _exportJournal(p, refs),
+            itemBuilder: (_) => [
+              for (final p in _JournalPeriod.values)
+                PopupMenuItem<_JournalPeriod>(
+                  value: p,
+                  child: ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(
+                      Icons.picture_as_pdf_outlined,
+                      size: 20,
+                    ),
+                    title: Text('Отчёт: ${p.label.toLowerCase()}'),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: wide

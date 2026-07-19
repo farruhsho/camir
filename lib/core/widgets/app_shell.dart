@@ -44,6 +44,16 @@ class AppDestination {
 /// landing/guard: the first destination the user is allowed to see is their
 /// home screen after login. Order = landing priority per role.
 const kAppDestinations = <AppDestination>[
+  // Дашборд — аналитика для директора (KPI + выручка). Первым, чтобы
+  // супер-админ/директор попадал сюда после входа. Право dashboard.view —
+  // у Ресепшена его нет, поэтому он приземляется на Регистратуру.
+  AppDestination(
+    Icons.dashboard_outlined,
+    Icons.dashboard,
+    'Дашборд',
+    '/dashboard',
+    permissions: ['dashboard.view'],
+  ),
   AppDestination(
     Icons.point_of_sale_outlined,
     Icons.point_of_sale,

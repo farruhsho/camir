@@ -46,6 +46,25 @@ class FibroscanRepository {
     return records;
   }
 
+  /// Исследования за период [fromIso, toIso] включительно (ISO `YYYY-MM-DD`)
+  /// для журнального отчёта (задача экспорта журнала). Диапазон строится по
+  /// строковому полю `date` — ISO сортируется лексикографически, поэтому это
+  /// одиночный (авто-индексируемый) диапазонный запрос БЕЗ составного индекса
+  /// (range-фильтр и `orderBy` по одному и тому же полю). Порядок —
+  /// хронологический (старые сверху), как в бумажном журнале. Битый документ
+  /// пропускается, а не роняет весь список.
+  Future<List<FibroscanRecord>> listForPeriod(
+    String fromIso,
+    String toIso,
+  ) async {
+    final snap = await _col
+        .where('date', isGreaterThanOrEqualTo: fromIso)
+        .where('date', isLessThanOrEqualTo: toIso)
+        .orderBy('date')
+        .get();
+    return _mapDocs(snap.docs);
+  }
+
   /// Записи фиброскана конкретного пациента (для карточки пациента, агент B).
   /// Основной матч — по `patient_id`. Если передан [fullName], дополнительно
   /// подхватываются записи-«сироты» БЕЗ `patient_id` с точным совпадением ФИО

@@ -17,6 +17,7 @@ import '../../patients/domain/patient.dart';
 import '../data/analyses_repository.dart';
 import '../domain/analysis_record.dart';
 import '../domain/analysis_result_view.dart';
+import 'analyses_journal_pdf.dart';
 import 'analysis_pdf.dart';
 
 /// Модуль «Анализы» (лабораторные исследования — ОАК, биохимия, маркеры
@@ -331,6 +332,104 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     }
   }
 
+  // ── Журнал анализов (отчёт за период) ─────────────────────────────────────
+
+  /// Открывает небольшой выбор периода (сегодня / 7 дней / 30 дней) и строит
+  /// журнал-таблицу PDF за выбранный период поверх текущего списка записей.
+  Future<void> _openJournalExport(
+    AsyncValue<List<AnalysisRecord>> records,
+  ) async {
+    final loaded = records.valueOrNull;
+    if (loaded == null) {
+      _snack('Записи ещё загружаются, попробуйте ещё раз');
+      return;
+    }
+    final choice = await showModalBottomSheet<_JournalPeriod>(
+      context: context,
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.summarize_outlined,
+                    size: 20,
+                    color: AppColors.accent,
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    'Журнал анализов — за период',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            for (final p in _JournalPeriod.values)
+              ListTile(
+                leading: Icon(p.icon, color: AppColors.accent),
+                title: Text(p.title),
+                onTap: () => Navigator.of(sheetCtx).pop(p),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+    await _generateJournal(choice, loaded);
+  }
+
+  /// Фильтрует записи по дате анализа за выбранный период и строит PDF-журнал.
+  Future<void> _generateJournal(
+    _JournalPeriod period,
+    List<AnalysisRecord> all,
+  ) async {
+    final types =
+        ref.read(analysisTypesProvider).valueOrNull ?? const <AnalysisType>[];
+    final now = DateTime.now();
+    final fromIso = _isoDate(now.subtract(Duration(days: period.days - 1)));
+    final toIso = _isoDate(now);
+
+    // Дата анализа хранится строкой ISO `YYYY-MM-DD` (сортируется/сравнивается
+    // лексикографически = хронологически). Свежие сверху.
+    final filtered =
+        all
+            .where(
+              (r) =>
+                  r.date.compareTo(fromIso) >= 0 &&
+                  r.date.compareTo(toIso) <= 0,
+            )
+            .toList()
+          ..sort((a, b) => b.date.compareTo(a.date));
+
+    if (filtered.isEmpty) {
+      _snack('За выбранный период записей нет');
+      return;
+    }
+
+    final periodLabel = period == _JournalPeriod.today
+        ? 'за ${_dmyFromIso(toIso)}'
+        : 'за период ${_dmyFromIso(fromIso)} – ${_dmyFromIso(toIso)}';
+
+    try {
+      await printAnalysesJournal(
+        records: filtered,
+        types: types,
+        periodLabel: periodLabel,
+      );
+    } catch (e) {
+      if (mounted) _snack(friendlyError(e), error: true);
+    }
+  }
+
   /// Открывает диалог правки записи (дозаполнить результат / исправить данные).
   Future<void> _openEdit(AnalysisRecord r) async {
     final saved = await showDialog<bool>(
@@ -379,7 +478,20 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     final list = _listCard(records, allTypes);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Анализы')),
+      appBar: AppBar(
+        title: const Text('Анализы'),
+        actions: [
+          TextButton.icon(
+            onPressed: () => _openJournalExport(records),
+            icon: const Icon(Icons.summarize_outlined, size: 20),
+            label: const Text('Отчёт / Экспорт'),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: wide
@@ -931,6 +1043,26 @@ String _dmyFromIso(String raw) {
   final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(raw);
   if (m == null) return raw;
   return '${m.group(3)}.${m.group(2)}.${m.group(1)}';
+}
+
+/// [DateTime] → ISO `YYYY-MM-DD` (для сравнения периода с полем `date`).
+String _isoDate(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-'
+    '${d.month.toString().padLeft(2, '0')}-'
+    '${d.day.toString().padLeft(2, '0')}';
+
+/// Период журнала анализов для отчёта/экспорта. [days] — сколько последних дней
+/// (включительно) попадает в выборку по дате анализа.
+enum _JournalPeriod {
+  today(1, 'Сегодня', Icons.today_outlined),
+  week(7, 'Последние 7 дней', Icons.date_range_outlined),
+  month(30, 'Последние 30 дней', Icons.calendar_month_outlined);
+
+  const _JournalPeriod(this.days, this.title, this.icon);
+
+  final int days;
+  final String title;
+  final IconData icon;
 }
 
 /// Диалог правки записи анализа — те же поля, что и при создании, с тем же

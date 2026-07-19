@@ -32,7 +32,6 @@ const Map<String, List<String>> kRolePermissions = <String, List<String>>{
     'visits.create',
     'visits.read',
     'visits.update',
-    'dashboard.view',
     'inventory.read',
     'inventory.manage',
     'inventory.write_off',

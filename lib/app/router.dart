@@ -9,6 +9,7 @@ import '../features/audit/presentation/audit_log_screen.dart';
 import '../features/auth/application/auth_controller.dart';
 import '../features/auth/domain/auth_user.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/dashboard/presentation/dashboard_screen.dart';
 import '../features/fibroscan/presentation/fibroscan_screen.dart';
 import '../features/fibroscan_refs/presentation/fibroscan_refs_screen.dart';
 import '../features/inventory/presentation/inventory_screen.dart';
@@ -31,6 +32,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state, child) =>
             AppShell(location: state.matchedLocation, child: child),
         routes: [
+          GoRoute(
+            path: '/dashboard',
+            builder: (_, _) => const DashboardScreen(),
+          ),
           GoRoute(
             path: '/reception',
             builder: (_, _) => const ReceptionScreen(),
