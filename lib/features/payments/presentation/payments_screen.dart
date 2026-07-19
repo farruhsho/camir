@@ -8,6 +8,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
+import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../patients/data/patients_repository.dart';
@@ -19,6 +20,14 @@ import '../domain/service_item.dart';
 import 'price_list_screen.dart';
 
 String _som(num v) => formatMoney(v.toString());
+
+/// Дата+время для детального просмотра, локальное время `dd.MM.yyyy HH:mm`.
+String _fmtDateTime(DateTime? d) {
+  if (d == null) return '';
+  final l = d.toLocal();
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(l.day)}.${two(l.month)}.${l.year} ${two(l.hour)}:${two(l.minute)}';
+}
 
 /// Касса «Цадмир»: дневной отчёт (собрано / платежей / возвраты) + список
 /// платежей за день + проведение нового платежа и возврат. Валюта — KGS «сом».
@@ -91,8 +100,10 @@ class PaymentsScreen extends ConsumerWidget {
             final gross = items.fold<num>(0, (s, p) => s + p.total);
             // Расход = возвраты, оформленные СЕГОДНЯ (по refund_day) — деньги,
             // ушедшие из сегодняшней кассы, даже если платёж был создан раньше.
-            final refundedSum =
-                refundsToday.fold<num>(0, (s, p) => s + p.total);
+            final refundedSum = refundsToday.fold<num>(
+              0,
+              (s, p) => s + p.total,
+            );
             final net = gross - refundedSum;
 
             return ListView(
@@ -195,9 +206,7 @@ class PaymentsScreen extends ConsumerWidget {
     reasonCtrl.dispose();
     if (ok != true) return;
     try {
-      await ref
-          .read(paymentsRepositoryProvider)
-          .refund(p.id, reason: reason);
+      await ref.read(paymentsRepositoryProvider).refund(p.id, reason: reason);
       if (context.mounted) {
         ref.invalidate(todayPaymentsProvider);
         ref.invalidate(todayRefundsProvider);
@@ -375,6 +384,40 @@ class _PaymentTile extends StatelessWidget {
   final bool canRefund;
   final VoidCallback onRefund;
 
+  /// Детальный просмотр платежа со ВСЕМИ полями (список → деталь).
+  void _showDetail(BuildContext context) {
+    final p = payment;
+    showDetailSheet(
+      context,
+      title: 'Платёж',
+      rows: <DetailRow>[
+        DetailRow('Пациент', p.patientName, strong: true),
+        if (p.mrn != null) DetailRow('Карта №', p.mrn!),
+        const DetailRow.section('Услуги'),
+        for (final it in p.items)
+          DetailRow(
+            it.service,
+            '${_som(it.price)} × ${it.qty} = ${_som(it.subtotal)}',
+          ),
+        const DetailRow.section('Оплата'),
+        DetailRow('Итого', _som(p.total), strong: true),
+        DetailRow('Способ оплаты', p.methodLabel),
+        DetailRow('Статус', p.statusLabel),
+        if (p.note != null) DetailRow('Комментарий', p.note!),
+        DetailRow('День', p.day),
+        if (p.isRefunded) ...[
+          const DetailRow.section('Возврат'),
+          if (p.refundReason != null) DetailRow('Причина', p.refundReason!),
+          if (p.refundedAt != null)
+            DetailRow('Оформлен', _fmtDateTime(p.refundedAt)),
+        ],
+        const DetailRow.section('Служебное'),
+        if (p.createdBy != null) DetailRow('Кем проведён', p.createdBy!),
+        if (p.createdAt != null) DetailRow('Создан', _fmtDateTime(p.createdAt)),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = payment;
@@ -382,6 +425,7 @@ class _PaymentTile extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 10),
       child: AppCard(
         padding: const EdgeInsets.all(14),
+        onTap: () => _showDetail(context),
         child: Row(
           children: [
             Expanded(
@@ -412,14 +456,19 @@ class _PaymentTile extends StatelessWidget {
                     p.itemsSummary,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12.5, color: AppColors.sub),
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      color: AppColors.sub,
+                    ),
                   ),
                   const SizedBox(height: 6),
                   Row(
                     children: [
                       StatusBadge(
                         p.statusLabel,
-                        kind: p.isRefunded ? BadgeKind.danger : BadgeKind.success,
+                        kind: p.isRefunded
+                            ? BadgeKind.danger
+                            : BadgeKind.success,
                       ),
                       const SizedBox(width: 6),
                       Pill(label: p.methodLabel),
@@ -751,7 +800,10 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
             icon: const Icon(Icons.remove_circle_outline, size: 20),
             onPressed: () => _setQty(i, -1),
           ),
-          Text('${it.qty}', style: const TextStyle(fontWeight: FontWeight.w700)),
+          Text(
+            '${it.qty}',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
           IconButton(
             visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.add_circle_outline, size: 20),
@@ -870,8 +922,9 @@ class _CustomLineDialogState extends State<_CustomLineDialog> {
                   labelText: 'Название',
                   isDense: true,
                 ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Обязательное поле'
+                    : null,
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -904,9 +957,7 @@ class _CustomLineDialogState extends State<_CustomLineDialog> {
         FilledButton(
           onPressed: () {
             if (!_formKey.currentState!.validate()) return;
-            final price = num.parse(
-              _price.text.trim().replaceAll(',', '.'),
-            );
+            final price = num.parse(_price.text.trim().replaceAll(',', '.'));
             Navigator.pop(
               context,
               PaymentItem(service: _name.text.trim(), price: price),

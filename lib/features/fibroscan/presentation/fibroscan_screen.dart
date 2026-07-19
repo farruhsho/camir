@@ -7,7 +7,10 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/input_formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
+import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
+import '../../fibroscan_refs/data/fibroscan_refs_repository.dart';
+import '../../fibroscan_refs/domain/fibro_ref.dart';
 import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
 import '../data/fibroscan_repository.dart';
@@ -29,6 +32,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
   final _fullName = TextEditingController();
   final _birthYear = TextEditingController();
   final _date = TextEditingController();
+  final _lsm = TextEditingController();
+  final _cap = TextEditingController();
   String? _diagnosis;
   bool _busy = false;
 
@@ -59,6 +64,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
     _fullName.dispose();
     _birthYear.dispose();
     _date.dispose();
+    _lsm.dispose();
+    _cap.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -94,6 +101,26 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
     if (m == null) return raw;
     return '${m.group(3)}.${m.group(2)}.${m.group(1)}';
   }
+
+  /// [DateTime] → `ДД.ММ.ГГГГ ЧЧ:ММ` (для «Создано» в детальном просмотре).
+  static String _displayDateTime(DateTime d) =>
+      '${_two(d.day)}.${_two(d.month)}.${d.year} '
+      '${_two(d.hour)}:${_two(d.minute)}';
+
+  // ── LSM / CAP ──────────────────────────────────────────────────────────────
+
+  /// Необязательное число из ввода (десятичный разделитель — точка или запятая).
+  /// Пустой ввод → `null`; нечисловой ввод → `null` (валидатор в [_submit]
+  /// отличает пустое поле от мусора по непустому тексту).
+  static num? _parseNum(String raw) {
+    final t = raw.trim().replaceAll(',', '.');
+    if (t.isEmpty) return null;
+    return num.tryParse(t);
+  }
+
+  /// Число без лишнего `.0`: `8.0`→`8`, `8.2`→`8.2`.
+  static String _numStr(num v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toString();
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
@@ -169,6 +196,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
       _fullName.text = r.fullName;
       _birthYear.text = r.birthYear > 0 ? r.birthYear.toString() : '';
       _date.text = _displayDate(r.date);
+      _lsm.text = r.lsm != null ? _numStr(r.lsm!) : '';
+      _cap.text = r.cap != null ? _numStr(r.cap!) : '';
       // Диагноз ставим только если он есть в справочнике (иначе выпадашка
       // упадёт на неизвестном значении из старой записи).
       _diagnosis = kFibroscanDiagnoses.contains(r.diagnosis)
@@ -185,6 +214,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
       _patientId = null;
       _fullName.clear();
       _birthYear.clear();
+      _lsm.clear();
+      _cap.clear();
       _diagnosis = null;
       _date.text = _formatDate(DateTime.now());
     });
@@ -216,7 +247,12 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
     );
     if (ok != true) return;
     try {
-      await ref.read(fibroscanRepositoryProvider).delete(r.id);
+      await ref
+          .read(fibroscanRepositoryProvider)
+          .delete(
+            r.id,
+            summary: '${r.fullName} · ${_displayDate(r.date)} · ${r.diagnosis}',
+          );
       if (!mounted) return;
       // Если удалили запись, которую сейчас редактируем, — выходим из правки.
       if (_editingId == r.id) _cancelEdit();
@@ -261,6 +297,18 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
       _snack('Выберите диагноз', error: true);
       return;
     }
+    // LSM/CAP необязательны, но если поле заполнено — оно должно быть
+    // положительным числом.
+    final lsm = _parseNum(_lsm.text);
+    if (_lsm.text.trim().isNotEmpty && (lsm == null || lsm <= 0)) {
+      _snack('Некорректный LSM (положительное число, кПа)', error: true);
+      return;
+    }
+    final cap = _parseNum(_cap.text);
+    if (_cap.text.trim().isNotEmpty && (cap == null || cap <= 0)) {
+      _snack('Некорректный CAP (положительное число, дБ/м)', error: true);
+      return;
+    }
 
     final iso = _iso(date);
     setState(() => _busy = true);
@@ -273,6 +321,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
           birthYear: year,
           date: iso,
           diagnosis: diagnosis,
+          lsm: lsm,
+          cap: cap,
         );
         if (!mounted) return;
         _snack('Запись добавлена');
@@ -281,6 +331,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
           _patientId = null;
           _fullName.clear();
           _birthYear.clear();
+          _lsm.clear();
+          _cap.clear();
           _diagnosis = null;
         });
       } else {
@@ -290,6 +342,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
           birthYear: year,
           date: iso,
           diagnosis: diagnosis,
+          lsm: lsm,
+          cap: cap,
         );
         if (!mounted) return;
         _snack('Запись обновлена');
@@ -308,8 +362,12 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 1000;
-    final list = _listSection();
-    final form = _formSection();
+    // Референсы для «на лету» стадии фиброза (F..) и степени стеатоза (S..).
+    // Пусто/ещё не загружено — stageForLsm/gradeForCap подстрахуются
+    // стандартными порогами (kDefaultFibroRefs).
+    final refs = ref.watch(fibroRefsProvider).valueOrNull ?? const <FibroRef>[];
+    final list = _listSection(refs);
+    final form = _formSection(refs);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Фиброскан')),
@@ -334,7 +392,7 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
 
   // ── Форма записи ─────────────────────────────────────────────────────────────
 
-  Widget _formSection() {
+  Widget _formSection(List<FibroRef> refs) {
     final editing = _editingId != null;
     return _card(editing ? 'Изменить исследование' : 'Новое исследование', [
       // Поиск пациента показываем только при создании — правка существующей
@@ -476,6 +534,24 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
         ),
       ),
       const SizedBox(height: 12),
+      // LSM (жёсткость печени) → стадия фиброза F.. показывается прямо в поле.
+      _measureField(
+        controller: _lsm,
+        label: 'LSM (кПа)',
+        hint: 'жёсткость печени',
+        unit: 'кПа',
+        derive: (v) => stageForLsm(v, refs),
+      ),
+      const SizedBox(height: 12),
+      // CAP (затухание УЗ) → степень стеатоза S.. показывается прямо в поле.
+      _measureField(
+        controller: _cap,
+        label: 'CAP (дБ/м)',
+        hint: 'стеатоз печени',
+        unit: 'дБ/м',
+        derive: (v) => gradeForCap(v, refs),
+      ),
+      const SizedBox(height: 12),
       DropdownButtonFormField<String>(
         key: ValueKey('fibro-diag-${_editingId ?? 'new'}'),
         initialValue: _diagnosis,
@@ -498,9 +574,54 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
     ]);
   }
 
+  /// Числовое поле измерения (LSM/CAP) с единицей и производной стадией/степенью
+  /// прямо в поле: по мере ввода показывает, напр., «кПа · F2» / «дБ/м · S1».
+  /// [derive] превращает введённое число в подпись (`stageForLsm`/`gradeForCap`).
+  Widget _measureField({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    required String unit,
+    required String Function(num) derive,
+  }) {
+    final value = _parseNum(controller.text);
+    final tag = (value != null && value > 0) ? derive(value) : '';
+    return TextField(
+      controller: controller,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: money(),
+      // Перерисовываем поле, чтобы стадия/степень пересчитывались на лету.
+      onChanged: (_) => setState(() {}),
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        isDense: true,
+        suffix: Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: unit,
+                style: const TextStyle(fontSize: 12.5, color: AppColors.sub),
+              ),
+              if (tag.isNotEmpty)
+                TextSpan(
+                  text: '  ·  $tag',
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.accent,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // ── Список исследований ──────────────────────────────────────────────────────
 
-  Widget _listSection() {
+  Widget _listSection(List<FibroRef> refs) {
     final async = ref.watch(fibroscanListProvider);
     return _card('Журнал исследований', [
       AsyncValueWidget<List<FibroscanRecord>>(
@@ -518,80 +639,161 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
               ),
             );
           }
-          return Column(children: [for (final r in items) _recordTile(r)]);
+          return Column(
+            children: [for (final r in items) _recordTile(r, refs)],
+          );
         },
       ),
     ]);
   }
 
-  Widget _recordTile(FibroscanRecord r) {
+  Widget _recordTile(FibroscanRecord r, List<FibroRef> refs) {
     final highlight = _editingId == r.id;
+    // Компактная строка измерений с производной стадией/степенью (если заданы).
+    final measures = <String>[
+      if (r.lsm != null)
+        'LSM ${_measureText(r.lsm!, 'кПа', stageForLsm(r.lsm!, refs))}',
+      if (r.cap != null)
+        'CAP ${_measureText(r.cap!, 'дБ/м', gradeForCap(r.cap!, refs))}',
+    ];
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       decoration: highlight
           ? BoxDecoration(
               color: AppColors.tealBg,
               borderRadius: BorderRadius.circular(AppColors.rField),
             )
           : null,
-      child: Row(
-        children: [
-          const Icon(Icons.waves_outlined, size: 20, color: AppColors.accent),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  r.fullName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.ink,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '${_displayDate(r.date)}  ·  ${r.birthYear} г.р.',
-                  style: const TextStyle(fontSize: 12.5, color: AppColors.sub),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          StatusBadge(r.diagnosis, kind: BadgeKind.info),
-          PopupMenuButton<String>(
-            tooltip: 'Действия',
-            icon: const Icon(Icons.more_vert, size: 20, color: AppColors.sub),
-            onSelected: (v) {
-              if (v == 'edit') _startEdit(r);
-              if (v == 'delete') _confirmDelete(r);
-            },
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                value: 'edit',
-                child: ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.edit_outlined, size: 20),
-                  title: Text('Изменить'),
+      child: InkWell(
+        onTap: () => _showDetail(r, refs),
+        borderRadius: BorderRadius.circular(AppColors.rField),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.waves_outlined,
+                size: 20,
+                color: AppColors.accent,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      r.fullName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.ink,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${_displayDate(r.date)}  ·  ${r.birthYear} г.р.',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        color: AppColors.sub,
+                      ),
+                    ),
+                    if (measures.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        measures.join('     '),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.accent,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
-              PopupMenuItem(
-                value: 'delete',
-                child: ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.delete_outline, size: 20),
-                  title: Text('Удалить'),
+              const SizedBox(width: 8),
+              StatusBadge(r.diagnosis, kind: BadgeKind.info),
+              PopupMenuButton<String>(
+                tooltip: 'Действия',
+                icon: const Icon(
+                  Icons.more_vert,
+                  size: 20,
+                  color: AppColors.sub,
                 ),
+                onSelected: (v) {
+                  if (v == 'edit') _startEdit(r);
+                  if (v == 'delete') _confirmDelete(r);
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'edit',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.edit_outlined, size: 20),
+                      title: Text('Изменить'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.delete_outline, size: 20),
+                      title: Text('Удалить'),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
       ),
+    );
+  }
+
+  /// «8.2 кПа · F2» — число + единица + производная подпись (пустая подпись
+  /// опускается).
+  static String _measureText(num v, String unit, String tag) =>
+      tag.isEmpty ? '${_numStr(v)} $unit' : '${_numStr(v)} $unit · $tag';
+
+  /// Детальный просмотр записи (единый bottom-sheet «список → деталь»): все поля
+  /// записи, LSM/CAP с производной стадией фиброза и степенью стеатоза.
+  Future<void> _showDetail(FibroscanRecord r, List<FibroRef> refs) {
+    final hasMeasures = r.lsm != null || r.cap != null;
+    final linked = r.patientId != null && r.patientId!.isNotEmpty;
+    return showDetailSheet(
+      context,
+      title: 'Исследование фиброскана',
+      rows: [
+        DetailRow('ФИО', r.fullName, strong: true),
+        DetailRow('Год рождения', r.birthYear > 0 ? '${r.birthYear} г.р.' : ''),
+        DetailRow('Дата исследования', _displayDate(r.date)),
+        DetailRow('Диагноз', r.diagnosis),
+        if (hasMeasures) ...[
+          const DetailRow.section('Измерения'),
+          if (r.lsm != null)
+            DetailRow(
+              'LSM (фиброз)',
+              _measureText(r.lsm!, 'кПа', stageForLsm(r.lsm!, refs)),
+            ),
+          if (r.cap != null)
+            DetailRow(
+              'CAP (стеатоз)',
+              _measureText(r.cap!, 'дБ/м', gradeForCap(r.cap!, refs)),
+            ),
+        ],
+        const DetailRow.section('Учёт'),
+        DetailRow(
+          'Пациент',
+          linked ? 'Из картотеки' : 'Разовая запись (без карты)',
+        ),
+        DetailRow(
+          'Создано',
+          r.createdAt != null ? _displayDateTime(r.createdAt!) : '',
+        ),
+      ],
     );
   }
 

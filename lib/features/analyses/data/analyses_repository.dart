@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../audit/data/audit_repository.dart';
 import '../domain/analysis_record.dart';
 
 final analysesRepositoryProvider = Provider<AnalysesRepository>(
@@ -117,6 +118,13 @@ class AnalysesRepository {
       'created_by': _uid,
       'created_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'analyses',
+      entity: 'analysis',
+      entityId: ref.id,
+      action: 'create',
+      summary: 'Добавлен анализ «$analysisType» — $fullName',
+    );
     final doc = await ref.get();
     return AnalysisRecord.fromJson({...?doc.data(), 'id': doc.id});
   }
@@ -147,11 +155,36 @@ class AnalysesRepository {
 
     await _col.doc(id).update(data);
     final doc = await _col.doc(id).get();
-    return AnalysisRecord.fromJson({...?doc.data(), 'id': doc.id});
+    final record = AnalysisRecord.fromJson({...?doc.data(), 'id': doc.id});
+    await logAudit(
+      module: 'analyses',
+      entity: 'analysis',
+      entityId: id,
+      action: 'update',
+      summary: 'Изменён анализ «${record.analysisType}» — ${record.fullName}',
+    );
+    return record;
   }
 
-  /// Удаляет запись анализа (например заведена по ошибке).
-  Future<void> delete(String id) => _col.doc(id).delete();
+  /// Удаляет запись анализа (например заведена по ошибке). Перед удалением
+  /// читает документ, чтобы записать осмысленную строку в журнал аудита.
+  Future<void> delete(String id) async {
+    final snap = await _col.doc(id).get();
+    final data = snap.data();
+    await _col.doc(id).delete();
+    final type = data?['analysis_type']?.toString() ?? '';
+    final name = data?['full_name']?.toString() ?? '';
+    final label = [type, name].where((s) => s.isNotEmpty).join(' — ');
+    await logAudit(
+      module: 'analyses',
+      entity: 'analysis',
+      entityId: id,
+      action: 'delete',
+      summary: label.isEmpty
+          ? 'Удалена запись анализа'
+          : 'Удалён анализ «$label»',
+    );
+  }
 
   // ── Разбор документов ──────────────────────────────────────────────────────
 

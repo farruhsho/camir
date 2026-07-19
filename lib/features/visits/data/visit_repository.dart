@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../audit/data/audit_repository.dart';
 import '../domain/visit.dart';
 
 final visitRepositoryProvider = Provider<VisitRepository>(
@@ -54,11 +55,13 @@ class VisitRepository {
     final day = todayIso();
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final docRef = _col.doc();
+    var queueNumber = 0;
     await _db.runTransaction((tx) async {
       final counterRef = _db.collection('counters').doc('queue-$day');
       final snap = await tx.get(counterRef);
       final current = (snap.data()?['seq'] as num?)?.toInt() ?? 0;
       final next = current + 1;
+      queueNumber = next;
       tx.set(counterRef, <String, dynamic>{
         'seq': next,
       }, SetOptions(merge: true));
@@ -78,7 +81,15 @@ class VisitRepository {
       });
     });
     final doc = await docRef.get();
-    return Visit.fromMap({...?doc.data(), 'id': doc.id});
+    final visit = Visit.fromMap({...?doc.data(), 'id': doc.id});
+    await logAudit(
+      module: 'visits',
+      entity: 'visit',
+      entityId: docRef.id,
+      action: 'create',
+      summary: 'Регистрация в очереди № $queueNumber — $patientName',
+    );
+    return visit;
   }
 
   /// Визиты за сегодня, по возрастанию `queue_number`. [statuses] — опциональный
@@ -105,12 +116,14 @@ class VisitRepository {
   Future<void> setStatus(String id, String newStatus) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final docRef = _col.doc(id);
+    var fromStatus = kVisitWaiting;
     await _db.runTransaction((tx) async {
       final snap = await tx.get(docRef);
       if (!snap.exists) {
         throw const VisitTransitionException('Визит не найден.');
       }
       final current = snap.data()?['status']?.toString() ?? kVisitWaiting;
+      fromStatus = current;
       final allowed = kVisitAllowedTransitions[current] ?? const <String>[];
       if (!allowed.contains(newStatus)) {
         final from = kVisitStatusLabels[current] ?? current;
@@ -132,6 +145,14 @@ class VisitRepository {
       }
       tx.update(docRef, data);
     });
+    await logAudit(
+      module: 'visits',
+      entity: 'visit',
+      entityId: id,
+      action: 'status_change',
+      summary: '$fromStatus->$newStatus',
+      changes: <String, dynamic>{'from': fromStatus, 'to': newStatus},
+    );
   }
 
   static String? _clean(String? v) {

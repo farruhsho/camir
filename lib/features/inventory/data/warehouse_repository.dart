@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../audit/data/audit_repository.dart';
 import '../domain/stock_math.dart';
 import '../domain/warehouse_movement.dart';
 import '../domain/warehouse_product.dart';
@@ -34,9 +35,12 @@ class WarehouseRepository {
   // ── Товары ────────────────────────────────────────────────────────────────
 
   /// Каталог товаров (по названию, по возрастанию — так удобнее искать глазами).
+  /// Архивные (мягко удалённые) товары отфильтрованы на КЛИЕНТЕ, чтобы не
+  /// потерять легаси-карточки без поля `archived` (у Firestore-фильтра по
+  /// отсутствующему полю такие документы выпали бы).
   Future<List<WarehouseProduct>> products() async {
     final snap = await _products.orderBy('name').get();
-    return snap.docs.map(_product).toList();
+    return snap.docs.map(_product).where((p) => !p.archived).toList();
   }
 
   /// Создаёт карточку товара. Пустые необязательные поля не пишутся.
@@ -46,17 +50,91 @@ class WarehouseRepository {
     required String unit,
     num? minStock,
   }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
     final ref = await _products.add(<String, dynamic>{
       'name': name,
       if (category != null && category.isNotEmpty) 'category': category,
       'unit': unit,
       'min_stock': ?minStock,
       'stock': 0, // авторитетный остаток; далее меняется только транзакционно
-      'created_by': FirebaseAuth.instance.currentUser?.uid,
+      'archived': false,
+      'created_by': uid,
       'created_at': FieldValue.serverTimestamp(),
     });
     final doc = await ref.get();
-    return _product(doc);
+    final product = _product(doc);
+    await logAudit(
+      module: 'inventory',
+      entity: 'product',
+      entityId: product.id,
+      action: 'create',
+      summary: 'Добавлен товар: ${product.name}',
+      changes: <String, dynamic>{
+        'name': name,
+        if (category != null && category.isNotEmpty) 'category': category,
+        'unit': unit,
+        'min_stock': ?minStock,
+      },
+    );
+    return product;
+  }
+
+  /// Редактирует карточку товара (только реквизиты — остаток меняется
+  /// исключительно движениями). Штампует `updated_by`/`updated_at` и пишет аудит
+  /// (`action: update`). Очищенные поля (пустая категория, снятый минимум)
+  /// удаляются из документа через [FieldValue.delete].
+  Future<void> updateProduct(
+    String id, {
+    required String name,
+    String? category,
+    required String unit,
+    num? minStock,
+  }) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    await _products.doc(id).update(<String, dynamic>{
+      'name': name,
+      'category': (category != null && category.isNotEmpty)
+          ? category
+          : FieldValue.delete(),
+      'unit': unit,
+      'min_stock': minStock ?? FieldValue.delete(),
+      'updated_by': uid,
+      'updated_at': FieldValue.serverTimestamp(),
+    });
+    await logAudit(
+      module: 'inventory',
+      entity: 'product',
+      entityId: id,
+      action: 'update',
+      summary: 'Изменён товар: $name',
+      changes: <String, dynamic>{
+        'name': name,
+        if (category != null && category.isNotEmpty) 'category': category,
+        'unit': unit,
+        'min_stock': ?minStock,
+      },
+    );
+  }
+
+  /// Мягко удаляет товар: ставит `archived: true` (жёсткого удаления нет — так
+  /// сохраняется история движений и остаётся возможность аудита). Штампует
+  /// `updated_by`/`updated_at` и пишет аудит (`action: archive`).
+  Future<void> archiveProduct(String id, {String? name}) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    await _products.doc(id).update(<String, dynamic>{
+      'archived': true,
+      'updated_by': uid,
+      'updated_at': FieldValue.serverTimestamp(),
+    });
+    await logAudit(
+      module: 'inventory',
+      entity: 'product',
+      entityId: id,
+      action: 'archive',
+      summary: name != null && name.isNotEmpty
+          ? 'Удалён товар: $name'
+          : 'Удалён товар',
+    );
   }
 
   // ── Движения ──────────────────────────────────────────────────────────────
@@ -133,7 +211,114 @@ class WarehouseRepository {
     });
 
     final doc = await movementRef.get();
+    final movement = _movement(doc);
+    await logAudit(
+      module: 'inventory',
+      entity: 'stock_movement',
+      entityId: movement.id,
+      action: 'create',
+      summary: '${movement.kindLabel}: ${formatStock(qty)}',
+      changes: <String, dynamic>{
+        'product_id': productId,
+        'kind': kind,
+        'qty': qty,
+        if (reason != null && reason.isNotEmpty) 'reason': reason,
+        'date': date,
+      },
+    );
+    return movement;
+  }
+
+  /// Сторнирует движение: **транзакционно** добавляет ОБРАТНОЕ движение
+  /// (противоположный [WarehouseMovement.kind], та же [WarehouseMovement.qty],
+  /// причина «Сторно») и правит `products/{id}.stock`, чтобы остаток остался
+  /// консистентным. Исходную запись не трогаем (журнал append-only), а связь
+  /// храним в поле `reverses`.
+  ///
+  /// Если сторно ушло бы в минус (например, сторнируем приход, товар которого
+  /// уже израсходован), бросает [WarehouseException] «Недостаточно на складе» —
+  /// как и обычный расход. Пишет аудит (`action: void`). Возвращает созданное
+  /// обратное движение.
+  Future<WarehouseMovement> voidMovement(String id) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final origRef = _movements.doc(id);
+    final origSnap = await origRef.get();
+    if (!origSnap.exists) {
+      throw const WarehouseException(
+        'Движение не найдено (возможно, удалено).',
+      );
+    }
+    final orig = _movement(origSnap);
+    final reverseKind = orig.isIn
+        ? WarehouseMovement.kOut
+        : WarehouseMovement.kIn;
+    final reverseIsIn = reverseKind == WarehouseMovement.kIn;
+    final productRef = _products.doc(orig.productId);
+    final reverseRef = _movements.doc(); // id заранее — пишем внутри транзакции
+
+    // Предчтение товара: как в [addMovement], для легаси-товара без поля `stock`
+    // считаем seed точечным запросом ДО транзакции.
+    final preSnap = await productRef.get();
+    if (!preSnap.exists) {
+      throw const WarehouseException('Товар не найден (возможно, удалён).');
+    }
+    final hasStock = preSnap.data()?['stock'] is num;
+    final num? seed = hasStock ? null : await _scopedBalance(orig.productId);
+    final today = _isoToday();
+
+    await _db.runTransaction((txn) async {
+      final snap = await txn.get(productRef);
+      final data = snap.data() ?? const <String, dynamic>{};
+      final current = data['stock'] is num ? data['stock'] as num : (seed ?? 0);
+
+      // Бросит WarehouseException, если сторно увело бы остаток в минус.
+      final next = nextStock(
+        current: current,
+        isIn: reverseIsIn,
+        qty: orig.qty,
+      );
+
+      txn.set(reverseRef, <String, dynamic>{
+        'product_id': orig.productId,
+        'kind': reverseKind,
+        'qty': orig.qty,
+        'reason': 'Сторно',
+        'reverses': id,
+        'date': today,
+        'created_by': uid,
+        'created_at': FieldValue.serverTimestamp(),
+      });
+      txn.update(productRef, <String, dynamic>{
+        'stock': next,
+        'updated_by': uid,
+        'updated_at': FieldValue.serverTimestamp(),
+      });
+    });
+
+    await logAudit(
+      module: 'inventory',
+      entity: 'stock_movement',
+      entityId: id,
+      action: 'void',
+      summary: 'Сторно движения: ${orig.kindLabel} ${formatStock(orig.qty)}',
+      changes: <String, dynamic>{
+        'reverses': id,
+        'reversal_movement_id': reverseRef.id,
+        'kind': reverseKind,
+        'qty': orig.qty,
+      },
+    );
+
+    final doc = await reverseRef.get();
     return _movement(doc);
+  }
+
+  /// Сегодняшняя дата в ISO `YYYY-MM-DD` (формат хранения `date` у движений).
+  String _isoToday() {
+    final d = DateTime.now();
+    return '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
   }
 
   // ── Товары + остаток ────────────────────────────────────────────────────────
@@ -149,6 +334,7 @@ class WarehouseRepository {
     final result = <ProductStock>[];
     for (final doc in productsSnap.docs) {
       final product = _product(doc);
+      if (product.archived) continue; // мягко удалённые не показываем
       final raw = doc.data()['stock'];
       final num stock = raw is num ? raw : await _scopedBalance(product.id);
       result.add(ProductStock(product: product, stock: stock));
@@ -181,7 +367,9 @@ class WarehouseRepository {
       category: data['category'] as String?,
       unit: (data['unit'] as String?) ?? 'шт',
       minStock: data['min_stock'] as num?,
+      archived: data['archived'] == true,
       createdAt: (data['created_at'] as Timestamp?)?.toDate(),
+      updatedAt: (data['updated_at'] as Timestamp?)?.toDate(),
     );
   }
 

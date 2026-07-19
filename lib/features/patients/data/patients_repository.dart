@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/network/page.dart';
 import '../../../core/utils/input_formatters.dart';
+import '../../audit/data/audit_repository.dart';
 import '../domain/patient.dart';
 
 final patientsRepositoryProvider = Provider<PatientsRepository>(
@@ -97,23 +98,31 @@ class PatientsRepository {
   }
 
   /// Регистрирует пациента. Пустые необязательные поля не пишутся.
+  ///
+  /// [birthDate] — полная дата рождения (когда известна): пишется как ISO
+  /// `birth_date` (`ГГГГ-ММ-ДД`), а [birthYear] всегда сохраняется отдельно
+  /// (обратная совместимость с денормализацией визитов и поиском фиброскана).
+  /// Если [birthDate] задана — год берётся из неё.
   Future<Patient> create({
     required String lastName,
     required String firstName,
     String? middleName,
     required int birthYear,
+    DateTime? birthDate,
     String? phone,
     String? disease,
     String? referral,
     String? consultation,
   }) async {
     final mrn = await _nextMrn();
+    final year = birthDate?.year ?? birthYear;
     final ref = await _col.add(<String, dynamic>{
       'mrn': mrn,
       'last_name': lastName.trim(),
       'first_name': firstName.trim(),
       if (_clean(middleName) != null) 'middle_name': _clean(middleName),
-      'birth_year': birthYear,
+      'birth_year': year,
+      if (birthDate != null) 'birth_date': _isoDate(birthDate),
       if (_clean(phone) != null) 'phone': _clean(phone),
       if (_clean(disease) != null) 'disease': _clean(disease),
       if (_clean(referral) != null) 'referral': _clean(referral),
@@ -122,27 +131,42 @@ class PatientsRepository {
       'created_by': FirebaseAuth.instance.currentUser?.uid,
     });
     final doc = await ref.get();
-    return Patient.fromMap({...?doc.data(), 'id': doc.id});
+    final patient = Patient.fromMap({...?doc.data(), 'id': doc.id});
+    await logAudit(
+      module: 'patients',
+      entity: 'patient',
+      entityId: patient.id,
+      action: 'create',
+      summary: '№ ${patient.mrn} · ${patient.fullName}',
+    );
+    return patient;
   }
 
   /// Обновляет карту (форма редактирования отдаёт полный набор полей; пустые
   /// значения очищают поле). № карты и дата регистрации не меняются.
+  ///
+  /// [birthDate] пишется только когда задана (ISO `birth_date`); если она
+  /// `null` (у старой карты известен лишь год) — поле `birth_date` не трогаем,
+  /// чтобы не терять и не фабриковать день/месяц. [birthYear] пишется всегда.
   Future<Patient> update(
     String id, {
     required String lastName,
     required String firstName,
     String? middleName,
     required int birthYear,
+    DateTime? birthDate,
     String? phone,
     String? disease,
     String? referral,
     String? consultation,
   }) async {
+    final year = birthDate?.year ?? birthYear;
     await _col.doc(id).update(<String, dynamic>{
       'last_name': lastName.trim(),
       'first_name': firstName.trim(),
       'middle_name': _clean(middleName),
-      'birth_year': birthYear,
+      'birth_year': year,
+      if (birthDate != null) 'birth_date': _isoDate(birthDate),
       'phone': _clean(phone),
       'disease': _clean(disease),
       'referral': _clean(referral),
@@ -150,8 +174,22 @@ class PatientsRepository {
       'updated_by': FirebaseAuth.instance.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
-    return byId(id);
+    final patient = await byId(id);
+    await logAudit(
+      module: 'patients',
+      entity: 'patient',
+      entityId: id,
+      action: 'update',
+      summary: '№ ${patient.mrn} · ${patient.fullName}',
+    );
+    return patient;
   }
+
+  /// `ГГГГ-ММ-ДД` из [d] (календарная дата, как ждёт [Patient.fromMap]).
+  static String _isoDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
 
   static String? _clean(String? v) {
     final t = v?.trim();

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/role_catalog.dart';
 import '../../../firebase_options.dart';
+import '../../audit/data/audit_repository.dart';
 import '../domain/staff_member.dart';
 
 final staffRepositoryProvider = Provider<StaffRepository>(
@@ -103,6 +104,15 @@ class StaffRepository {
         );
       }
       await secondaryAuth.signOut();
+      await logAudit(
+        module: 'staff',
+        entity: 'staff',
+        entityId: uid,
+        action: 'create',
+        summary:
+            'Заведён сотрудник «$normName» ($normEmail), роль: '
+            '${role.isEmpty ? 'без роли' : role}',
+      );
       return StaffMember(
         uid: uid,
         email: normEmail,
@@ -129,6 +139,15 @@ class StaffRepository {
       'updated_by': _auth.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'staff',
+      entity: 'staff',
+      entityId: uid,
+      action: 'role_change',
+      summary:
+          'Изменена роль сотрудника на «${role.isEmpty ? 'без роли' : role}»',
+      changes: <String, dynamic>{'role': role},
+    );
   }
 
   /// Отзывает/возвращает доступ сотруднику (флаг `disabled`). Auth-аккаунт при
@@ -140,6 +159,16 @@ class StaffRepository {
       'updated_by': _auth.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'staff',
+      entity: 'staff',
+      entityId: uid,
+      action: 'disable',
+      summary: disabled
+          ? 'Доступ сотруднику отозван'
+          : 'Доступ сотруднику восстановлен',
+      changes: <String, dynamic>{'disabled': disabled},
+    );
   }
 
   /// Инициализирует (или переиспользует) вторичное Firebase-приложение — чтобы

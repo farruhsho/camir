@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../domain/visit.dart';
 
@@ -79,6 +80,35 @@ class VisitTile extends StatelessWidget {
   final void Function(String newStatus) onAction;
   final bool busy;
 
+  /// Открывает единый детальный просмотр «список → деталь» со ВСЕМИ полями
+  /// визита (используется и доской очереди, и живой очередью регистратуры).
+  void _showDetail(BuildContext context) {
+    final v = visit;
+    showDetailSheet(
+      context,
+      title: v.patientName.isEmpty ? 'Визит' : v.patientName,
+      rows: [
+        DetailRow('№ в очереди', '${v.queueNumber}', strong: true),
+        DetailRow('Статус', v.statusLabel, strong: true),
+        DetailRow.section('Пациент'),
+        DetailRow('ФИО', v.patientName),
+        DetailRow('№ карты', v.mrn),
+        DetailRow('Год рождения', '${v.birthYear}'),
+        if (v.phone != null) DetailRow('Телефон', v.phone!),
+        DetailRow('Направление', v.referralLabel ?? ''),
+        if (v.note != null)
+          DetailRow('Заметка (консультация регистратуры)', v.note!),
+        DetailRow.section('Время'),
+        DetailRow('Зарегистрирован', _fmtTs(v.createdAt)),
+        DetailRow('Вызван на приём', _fmtTs(v.calledAt)),
+        DetailRow('Завершён', _fmtTs(v.completedAt)),
+        DetailRow('Отменён', _fmtTs(v.cancelledAt)),
+        DetailRow.section('Служебное'),
+        DetailRow('ID визита', v.id),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final actions = _actionsFor(visit.status);
@@ -88,83 +118,101 @@ class VisitTile extends StatelessWidget {
       if (visit.phone != null) visit.phone!,
     ].join('  ·  ');
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
         color: AppColors.card,
         borderRadius: BorderRadius.circular(AppColors.rField),
-        border: Border.all(color: AppColors.line),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _QueueBadge(visit.queueNumber),
-              const SizedBox(width: 12),
-              InitialsAvatar(visit.initials, size: 36, fontSize: 12.5),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
+        child: InkWell(
+          onTap: () => _showDetail(context),
+          borderRadius: BorderRadius.circular(AppColors.rField),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.rField),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      visit.patientName,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.ink,
+                    _QueueBadge(visit.queueNumber),
+                    const SizedBox(width: 12),
+                    InitialsAvatar(visit.initials, size: 36, fontSize: 12.5),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            visit.patientName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.ink,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            sub,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: AppColors.sub,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      sub,
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        color: AppColors.sub,
-                      ),
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        StatusBadge(visit.statusLabel, kind: visit.statusKind),
+                        if (visit.referralLabel != null) ...[
+                          const SizedBox(height: 6),
+                          Pill(
+                            label: visit.referralLabel!,
+                            color: AppColors.tealDark,
+                            bg: AppColors.tealBg,
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  StatusBadge(visit.statusLabel, kind: visit.statusKind),
-                  if (visit.referralLabel != null) ...[
-                    const SizedBox(height: 6),
-                    Pill(
-                      label: visit.referralLabel!,
-                      color: AppColors.tealDark,
-                      bg: AppColors.tealBg,
-                    ),
-                  ],
-                ],
-              ),
-            ],
-          ),
-          if (actions.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Wrap(
-              alignment: WrapAlignment.end,
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final a in actions)
-                  _ActionButton(
-                    action: a,
-                    busy: busy,
-                    onTap: () => onAction(a.status),
+                if (actions.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final a in actions)
+                        _ActionButton(
+                          action: a,
+                          busy: busy,
+                          onTap: () => onAction(a.status),
+                        ),
+                    ],
                   ),
+                ],
               ],
             ),
-          ],
-        ],
+          ),
+        ),
       ),
     );
   }
+}
+
+/// Форматирует таймстамп события визита как `ДД.ММ.ГГГГ ЧЧ:ММ`
+/// (или пустую строку — тогда строка детали скрывается).
+String _fmtTs(DateTime? d) {
+  if (d == null) return '';
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(d.day)}.${two(d.month)}.${d.year.toString().padLeft(4, '0')} '
+      '${two(d.hour)}:${two(d.minute)}';
 }
 
 /// Квадратный бейдж с номером в очереди (#N).

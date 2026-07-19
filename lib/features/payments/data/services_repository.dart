@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/utils/formatters.dart';
+import '../../audit/data/audit_repository.dart';
 import '../domain/service_item.dart';
 
 final servicesRepositoryProvider = Provider<ServicesRepository>(
@@ -42,7 +44,7 @@ class ServicesRepository {
     required num price,
     String? category,
   }) async {
-    await _col.add(<String, dynamic>{
+    final ref = await _col.add(<String, dynamic>{
       'name': name.trim(),
       'price': price,
       if (category != null && category.trim().isNotEmpty)
@@ -51,6 +53,14 @@ class ServicesRepository {
       'created_by': FirebaseAuth.instance.currentUser?.uid,
       'created_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'services',
+      entity: 'service',
+      entityId: ref.id,
+      action: 'create',
+      summary:
+          'Добавлена услуга «${name.trim()}» · ${formatMoney(price.toString())}',
+    );
   }
 
   Future<void> update(
@@ -68,6 +78,14 @@ class ServicesRepository {
       'updated_by': FirebaseAuth.instance.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'services',
+      entity: 'service',
+      entityId: id,
+      action: 'update',
+      summary:
+          'Изменена услуга «${name.trim()}» · ${formatMoney(price.toString())}',
+    );
   }
 
   Future<void> setActive(String id, bool active) async {
@@ -76,5 +94,13 @@ class ServicesRepository {
       'updated_by': FirebaseAuth.instance.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'services',
+      entity: 'service',
+      entityId: id,
+      action: 'status_change',
+      summary: active ? 'Услуга включена' : 'Услуга отключена',
+      changes: <String, dynamic>{'active': active},
+    );
   }
 }

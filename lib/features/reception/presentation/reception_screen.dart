@@ -9,6 +9,7 @@ import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
+import '../../patients/presentation/birth_date_field.dart';
 import '../../visits/data/visit_repository.dart';
 import '../../visits/domain/visit.dart';
 import '../../visits/presentation/visit_tile.dart';
@@ -31,13 +32,18 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   final _lastName = TextEditingController();
   final _firstName = TextEditingController();
   final _middleName = TextEditingController();
-  final _birthYear = TextEditingController();
   final _phone = TextEditingController();
   final _disease = TextEditingController();
   final _consultation = TextEditingController();
 
   final _firstNameFocus = FocusNode();
   final _middleNameFocus = FocusNode();
+
+  /// Полная дата рождения из [BirthDateField] (обязательна при регистрации).
+  DateTime? _birthDate;
+
+  /// Текст ошибки под полем даты рождения (показывается при пустом значении).
+  String? _birthDateError;
 
   String? _referral;
   bool _saving = false;
@@ -52,7 +58,6 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
       _lastName,
       _firstName,
       _middleName,
-      _birthYear,
       _phone,
       _disease,
       _consultation,
@@ -65,7 +70,14 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    final formOk = _formKey.currentState!.validate();
+    // Дата рождения — обязательна. Диапазон пикера уже гарантирует реализм
+    // (не в будущем, возраст в пределах ~120), поэтому здесь проверяем только
+    // «выбрана ли она вообще».
+    if (_birthDate == null) {
+      setState(() => _birthDateError = 'Укажите дату рождения');
+    }
+    if (!formOk || _birthDate == null) return;
     setState(() {
       _saving = true;
       _error = null;
@@ -91,7 +103,8 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
         lastName: _lastName.text.trim(),
         firstName: _firstName.text.trim(),
         middleName: _middleName.text.trim(),
-        birthYear: int.parse(_birthYear.text.trim()),
+        birthYear: _birthDate!.year,
+        birthDate: _birthDate,
         phone: phone,
         disease: _disease.text.trim(),
         referral: _referral,
@@ -123,14 +136,14 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
 
       // Визит в очередь (статус waiting) с денормализованными полями пациента.
       await visitsRepo.create(
-            patientId: patient.id,
-            mrn: patient.mrn,
-            patientName: patient.fullName,
-            birthYear: patient.birthYear,
-            phone: patient.phone,
-            referral: _referral,
-            note: _consultation.text.trim(),
-          );
+        patientId: patient.id,
+        mrn: patient.mrn,
+        patientName: patient.fullName,
+        birthYear: patient.birthYear,
+        phone: patient.phone,
+        referral: _referral,
+        note: _consultation.text.trim(),
+      );
 
       ref.invalidate(todayVisitsProvider);
       if (mounted) {
@@ -191,12 +204,13 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
     setState(() {
       _referral = null;
       _error = null;
+      _birthDate = null;
+      _birthDateError = null;
     });
     for (final c in [
       _lastName,
       _firstName,
       _middleName,
-      _birthYear,
       _phone,
       _disease,
       _consultation,
@@ -264,13 +278,13 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
               controller: _lastName,
               textCapitalization: TextCapitalization.words,
               textInputAction: TextInputAction.next,
+              inputFormatters: nameFormatters,
               onFieldSubmitted: (_) => _firstNameFocus.requestFocus(),
               decoration: const InputDecoration(
                 labelText: 'Фамилия',
                 isDense: true,
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+              validator: validateName,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -278,13 +292,13 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
               focusNode: _firstNameFocus,
               textCapitalization: TextCapitalization.words,
               textInputAction: TextInputAction.next,
+              inputFormatters: nameFormatters,
               onFieldSubmitted: (_) => _middleNameFocus.requestFocus(),
               decoration: const InputDecoration(
                 labelText: 'Имя',
                 isDense: true,
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+              validator: validateName,
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -292,35 +306,27 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
               focusNode: _middleNameFocus,
               textCapitalization: TextCapitalization.words,
               textInputAction: TextInputAction.next,
+              inputFormatters: nameFormatters,
               decoration: const InputDecoration(
                 labelText: 'Отчество',
                 hintText: 'необязательно',
                 isDense: true,
               ),
+              validator: _optionalName,
             ),
             const SizedBox(height: 12),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: TextFormField(
-                    controller: _birthYear,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: digitsOnly(4),
-                    decoration: const InputDecoration(
-                      labelText: 'Год рождения',
-                      hintText: 'ГГГГ',
-                      isDense: true,
-                    ),
-                    validator: (v) {
-                      final t = (v ?? '').trim();
-                      if (t.isEmpty) return 'Обязательное поле';
-                      final year = int.tryParse(t);
-                      final now = DateTime.now().year;
-                      if (year == null || t.length != 4) return 'ГГГГ';
-                      if (year < 1900 || year > now) return 'Неверный год';
-                      return null;
-                    },
+                  child: BirthDateField(
+                    value: _birthDate,
+                    isDense: true,
+                    errorText: _birthDateError,
+                    onChanged: (v) => setState(() {
+                      _birthDate = v;
+                      _birthDateError = null;
+                    }),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -460,6 +466,14 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
       ),
     );
   }
+}
+
+/// Валидатор необязательного ФИО-поля (отчество): пусто — допустимо, цифры —
+/// нет. Ввод и так фильтруется [nameFormatters], это защита от вставки.
+String? _optionalName(String? v) {
+  final t = (v ?? '').trim();
+  if (t.isEmpty) return null;
+  return RegExp(r'[0-9]').hasMatch(t) ? 'Без цифр' : null;
 }
 
 /// Заголовок секции карточки: иконка бренда + текст.

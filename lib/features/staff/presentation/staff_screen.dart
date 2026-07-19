@@ -5,6 +5,8 @@ import '../../../core/auth/role_catalog.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/widgets/async_value_widget.dart';
+import '../../../core/widgets/confirm_dialog.dart';
+import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
 import '../data/staff_repository.dart';
@@ -89,8 +91,7 @@ class StaffScreen extends ConsumerWidget {
                           _StaffTile(
                             staff: s,
                             isSelf: s.uid == user.id,
-                            onChangeRole: () =>
-                                _changeRole(context, ref, s),
+                            onChangeRole: () => _changeRole(context, ref, s),
                             onToggleDisabled: () =>
                                 _toggleDisabled(context, ref, s),
                           ),
@@ -179,6 +180,17 @@ class StaffScreen extends ConsumerWidget {
     StaffMember s,
   ) async {
     final disable = !s.disabled;
+    final who = s.fullName.isEmpty ? s.email : s.fullName;
+    final ok = await confirmDialog(
+      context,
+      title: disable ? 'Отключить доступ?' : 'Включить доступ?',
+      message: disable
+          ? 'Сотрудник «$who» больше не сможет войти в приложение.'
+          : 'Сотрудник «$who» снова сможет входить в приложение.',
+      confirmLabel: disable ? 'Отключить' : 'Включить',
+      danger: disable,
+    );
+    if (!ok) return;
     try {
       await ref.read(staffRepositoryProvider).setDisabled(s.uid, disable);
       if (context.mounted) ref.invalidate(staffListProvider);
@@ -214,6 +226,7 @@ class _StaffTile extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 10),
       child: AppCard(
         padding: const EdgeInsets.all(14),
+        onTap: () => _showStaffDetail(context, staff, isSelf: isSelf),
         child: Row(
           children: [
             InitialsAvatar(staff.initials, size: 42),
@@ -280,7 +293,10 @@ class _StaffTile extends StatelessWidget {
                   if (v == 'disabled') onToggleDisabled();
                 },
                 itemBuilder: (_) => [
-                  const PopupMenuItem(value: 'role', child: Text('Сменить роль')),
+                  const PopupMenuItem(
+                    value: 'role',
+                    child: Text('Сменить роль'),
+                  ),
                   PopupMenuItem(
                     value: 'disabled',
                     child: Text(staff.disabled ? 'Включить' : 'Отключить'),
@@ -292,6 +308,39 @@ class _StaffTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Единый детальный просмотр «список → деталь» со ВСЕМИ полями сотрудника.
+/// Открывается тапом по плитке; трёхточечное меню действий сохранено.
+void _showStaffDetail(
+  BuildContext context,
+  StaffMember s, {
+  required bool isSelf,
+}) {
+  showDetailSheet(
+    context,
+    title: s.fullName.isEmpty ? s.email : s.fullName,
+    rows: [
+      DetailRow('ФИО', s.fullName),
+      DetailRow('Email', s.email),
+      DetailRow('Роль', s.displayRole, strong: true),
+      DetailRow('Супер-админ', s.isSuperuser ? 'Да' : 'Нет'),
+      DetailRow('Доступ', s.disabled ? 'Отключён' : 'Активен'),
+      if (isSelf) DetailRow('Это вы', 'Да'),
+      DetailRow.section('Служебное'),
+      DetailRow('Создан', _fmtStaffTs(s.createdAt)),
+      DetailRow('UID', s.uid),
+    ],
+  );
+}
+
+/// Форматирует таймстамп как `ДД.ММ.ГГГГ ЧЧ:ММ` (или пустую строку — тогда
+/// строка детали скрывается).
+String _fmtStaffTs(DateTime? d) {
+  if (d == null) return '';
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(d.day)}.${two(d.month)}.${d.year.toString().padLeft(4, '0')} '
+      '${two(d.hour)}:${two(d.minute)}';
 }
 
 /// Диалог заведения сотрудника. Возвращает `true`, если аккаунт создан.
@@ -365,8 +414,9 @@ class _AddStaffDialogState extends ConsumerState<_AddStaffDialog> {
                   labelText: 'ФИО',
                   isDense: true,
                 ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Обязательное поле'
+                    : null,
               ),
               const SizedBox(height: 12),
               TextFormField(

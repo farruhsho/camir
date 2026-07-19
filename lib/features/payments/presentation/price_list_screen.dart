@@ -207,9 +207,7 @@ class _ServiceDialogState extends ConsumerState<_ServiceDialog> {
     super.initState();
     final e = widget.existing;
     _name = TextEditingController(text: e?.name ?? '');
-    _price = TextEditingController(
-      text: e == null ? '' : _trimZeros(e.price),
-    );
+    _price = TextEditingController(text: e == null ? '' : _trimZeros(e.price));
     _category = TextEditingController(text: e?.category ?? '');
   }
 
@@ -278,8 +276,9 @@ class _ServiceDialogState extends ConsumerState<_ServiceDialog> {
                   labelText: 'Название',
                   isDense: true,
                 ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+                validator: (v) => (v == null || v.trim().isEmpty)
+                    ? 'Обязательное поле'
+                    : null,
               ),
               const SizedBox(height: 12),
               TextFormField(

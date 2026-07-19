@@ -1,11 +1,15 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 
 part 'fibroscan_record.freezed.dart';
 part 'fibroscan_record.g.dart';
 
-/// Запись исследования на фиброскане (эластография печени). Минимальный набор
-/// полей под учёт: дата · ФИО · год рождения · диагноз. Денежная/клиническая
-/// логика тут не ведётся — это простой журнал исследований.
+/// Запись исследования на фиброскане (эластография печени). Учётный минимум —
+/// дата · ФИО · год рождения · диагноз — дополнен измерениями прибора:
+/// LSM (жёсткость печени, кПа) и CAP (контролируемый параметр затухания, дБ/м).
+/// По ним экран выводит стадию фиброза (F0..F4) и степень стеатоза (S0..S3)
+/// через справочник референсов (`fibroscan_refs`). Денежная логика тут не
+/// ведётся — это журнал исследований.
 @freezed
 abstract class FibroscanRecord with _$FibroscanRecord {
   const factory FibroscanRecord({
@@ -21,10 +25,44 @@ abstract class FibroscanRecord with _$FibroscanRecord {
     required String date,
     // Диагноз из справочника [kFibroscanDiagnoses].
     required String diagnosis,
+    // LSM — жёсткость печени (Liver Stiffness Measurement), кПа. По нему через
+    // [stageForLsm] выводится стадия фиброза. Необязателен (старые записи и
+    // разовый учёт могут его не содержать).
+    num? lsm,
+    // CAP — контролируемый параметр затухания (дБ/м). По нему через
+    // [gradeForCap] выводится степень стеатоза. Необязателен.
+    num? cap,
+    // Когда запись создана (`created_at` из Firestore). Только для отображения в
+    // детальном просмотре — на запись не влияет (штампует репозиторий).
+    @FibroTimestampConverter() DateTime? createdAt,
   }) = _FibroscanRecord;
 
   factory FibroscanRecord.fromJson(Map<String, dynamic> json) =>
       _$FibroscanRecordFromJson(json);
+}
+
+/// Конвертер Firestore `Timestamp` ⇄ [DateTime] для полей-штампов времени.
+///
+/// Коллекция пишет `created_at` серверным временем (`Timestamp`), а
+/// json_serializable сам его не разберёт — этот конвертер приводит `Timestamp`
+/// (а также `DateTime`/ISO-строку/миллисекунды на всякий случай) к [DateTime].
+/// `toJson` возвращает ISO-строку, но фактически не используется: репозиторий
+/// пишет документы вручную, а не через `toJson`.
+class FibroTimestampConverter implements JsonConverter<DateTime?, Object?> {
+  const FibroTimestampConverter();
+
+  @override
+  DateTime? fromJson(Object? json) {
+    if (json == null) return null;
+    if (json is Timestamp) return json.toDate();
+    if (json is DateTime) return json;
+    if (json is int) return DateTime.fromMillisecondsSinceEpoch(json);
+    if (json is String) return DateTime.tryParse(json);
+    return null;
+  }
+
+  @override
+  Object? toJson(DateTime? object) => object?.toIso8601String();
 }
 
 /// Справочник диагнозов фиброскана — РОВНО эти шесть кодов (гепатиты и жировая/

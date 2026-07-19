@@ -7,16 +7,26 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/input_formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
+import '../../../core/widgets/confirm_dialog.dart';
+import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
+import '../../analysis_types/data/analysis_types_repository.dart';
+import '../../analysis_types/domain/analysis_type.dart';
 import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
 import '../data/analyses_repository.dart';
 import '../domain/analysis_record.dart';
+import '../domain/analysis_result_view.dart';
+import 'analysis_pdf.dart';
 
 /// Модуль «Анализы» (лабораторные исследования — ОАК, биохимия, маркеры
 /// вирусных гепатитов, ПЦР …). Запись = пациент (ФИО, год рождения, телефон) +
-/// вид анализа + дата (+ опц. результат). Пациента можно выбрать из картотеки
-/// (поиск как на ресепшене) либо ввести вручную.
+/// вид анализа (из справочника [activeAnalysisTypesProvider]) + дата + результат.
+///
+/// Ввод результата зависит от вида анализа: количественный — число + единица и
+/// «живая» оценка нормы (classify); качественный — выбор из вариантов
+/// (положительно / отрицательно / …). Для типов вне справочника остаётся
+/// свободный текстовый ввод (легаси/неизвестные виды).
 class AnalysesScreen extends ConsumerStatefulWidget {
   const AnalysesScreen({super.key});
 
@@ -28,8 +38,8 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
   final _formKey = GlobalKey<FormState>();
   final _fullName = TextEditingController();
   final _birthYear = TextEditingController();
-  final _phone = TextEditingController();
-  final _result = TextEditingController();
+  final _phone = TextEditingController(); // локальная часть (+996 в префиксе)
+  final _result = TextEditingController(); // число / свободный текст
   final _date = TextEditingController();
 
   // Поиск пациента в картотеке (необязательный — можно ввести данные вручную).
@@ -42,15 +52,20 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
   // При ручном вводе остаётся null.
   String? _patientId;
   String? _analysisType;
+  String? _resultOption; // выбранный вариант для качественного типа
   bool _saving = false;
   String? _error;
+
+  // Счётчик сбросов формы: меняет ключ выпадашки вида, чтобы после сохранения
+  // она визуально очистилась (DropdownButtonFormField хранит своё значение и не
+  // реагирует на обнуление зеркальной переменной без пересоздания).
+  int _formGen = 0;
 
   @override
   void initState() {
     super.initState();
     // Дата по умолчанию — сегодня (ДД.ММ.ГГГГ).
-    final now = DateTime.now();
-    _date.text = _fmtDmy(now);
+    _date.text = _fmtDmy(DateTime.now());
   }
 
   @override
@@ -73,36 +88,10 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
       '${d.year}';
 
   /// Парсит дату из поля (маска `ДД.ММ.ГГГГ`) в [DateTime] или null.
-  DateTime? _parseDate() {
-    final m = RegExp(r'^(\d{2})\.(\d{2})\.(\d{4})$').firstMatch(_date.text);
-    if (m == null) return null;
-    final day = int.parse(m.group(1)!);
-    final month = int.parse(m.group(2)!);
-    final year = int.parse(m.group(3)!);
-    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-    if (year < 1900) return null;
-    final d = DateTime(year, month, day);
-    // Отклоняем «перетекание» (например 31.02).
-    if (d.year != year || d.month != month || d.day != day) return null;
-    return d;
-  }
+  DateTime? _parseDate() => _parseDmy(_date.text);
 
   /// Дата для бэкенда (`YYYY-MM-DD`).
-  String? _iso() {
-    final d = _parseDate();
-    return d == null
-        ? null
-        : '${d.year.toString().padLeft(4, '0')}-'
-              '${d.month.toString().padLeft(2, '0')}-'
-              '${d.day.toString().padLeft(2, '0')}';
-  }
-
-  /// ISO-дата записи (`YYYY-MM-DD…`) → отображение `ДД.ММ.ГГГГ`; иначе как есть.
-  static String _displayDate(String raw) {
-    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(raw);
-    if (m == null) return raw;
-    return '${m.group(3)}.${m.group(2)}.${m.group(1)}';
-  }
+  String? _iso() => _isoFromDmy(_date.text);
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
@@ -154,7 +143,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
       _patientId = p.id;
       _fullName.text = p.fullName;
       _birthYear.text = p.birthYear > 0 ? p.birthYear.toString() : '';
-      _phone.text = p.phone ?? '';
+      _phone.text = extractUzPhoneLocal(p.phone);
       _found = const [];
       _searchController.clear();
     });
@@ -171,7 +160,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
 
   // ── Сохранение ───────────────────────────────────────────────────────────
 
-  Future<void> _save() async {
+  Future<void> _save(AnalysisType? selectedType) async {
     if (!_formKey.currentState!.validate()) return;
     if (_analysisType == null) {
       setState(() => _error = 'Выберите вид анализа');
@@ -193,12 +182,12 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
             patientId: _patientId,
             fullName: _fullName.text.trim(),
             birthYear: int.parse(_birthYear.text.trim()),
-            phone: _phone.text.trim().isEmpty ? null : _phone.text.trim(),
+            phone: assembleUzPhone(_phone.text),
             analysisType: _analysisType!,
-            result: _result.text.trim().isEmpty ? null : _result.text.trim(),
+            result: _resultFor(selectedType),
             date: iso,
           );
-      ref.invalidate(analysesListProvider);
+      _invalidateAfterMutation();
       if (mounted) {
         _resetForm();
         _snack('Запись анализа сохранена');
@@ -210,17 +199,38 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     }
   }
 
+  /// Итоговая строка результата с учётом вида: для качественного — выбранный
+  /// вариант; иначе — текст/число из поля. Пусто → null (результат необязателен,
+  /// его можно внести позже).
+  String? _resultFor(AnalysisType? type) {
+    if (type != null && type.isQualitative) {
+      final v = _resultOption?.trim();
+      return (v == null || v.isEmpty) ? null : v;
+    }
+    final t = _result.text.trim();
+    return t.isEmpty ? null : t;
+  }
+
   void _resetForm() {
     setState(() {
       _patientId = null;
       _analysisType = null;
+      _resultOption = null;
       _error = null;
+      _formGen++;
       _fullName.clear();
       _birthYear.clear();
       _phone.clear();
       _result.clear();
       _date.text = _fmtDmy(DateTime.now());
     });
+  }
+
+  /// После создания/правки/удаления обновляем список экрана. Карточка пациента
+  /// (agent B) читает анализы через autoDispose-family — она перечитает данные
+  /// при следующем открытии, поэтому только что внесённый результат там виден.
+  void _invalidateAfterMutation() {
+    ref.invalidate(analysesListProvider);
   }
 
   void _snack(String message, {bool error = false}) {
@@ -232,44 +242,119 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     );
   }
 
-  // ── Редактирование / удаление записи ──────────────────────────────────────
+  // ── Детальный просмотр / редактирование / удаление ────────────────────────
+
+  /// Открывает единый детальный просмотр записи (все поля + референс + оценка).
+  /// Внизу — действия «Печать/Экспорт», «Изменить», «Удалить».
+  Future<void> _openDetail(AnalysisRecord r, AnalysisType? type) async {
+    final flag = resultFlag(r.result, type);
+    final reference = referenceRange(type);
+    final hasResult = (r.result ?? '').trim().isNotEmpty;
+    await showDetailSheet(
+      context,
+      title: r.analysisType,
+      rows: [
+        const DetailRow.section('Пациент'),
+        DetailRow('ФИО', r.fullName, strong: true),
+        DetailRow(
+          'Источник',
+          r.patientId != null ? 'из картотеки' : 'введён вручную',
+        ),
+        DetailRow('Год рождения', r.birthYear.toString()),
+        if ((r.phone ?? '').trim().isNotEmpty) DetailRow('Телефон', r.phone!),
+        const DetailRow.section('Анализ'),
+        DetailRow('Вид анализа', r.analysisType),
+        DetailRow('Дата', _dmyFromIso(r.date)),
+        DetailRow(
+          'Результат',
+          hasResult ? resultWithUnit(r.result, type) : 'ожидается',
+          strong: hasResult,
+        ),
+        if (reference.isNotEmpty) DetailRow('Референс (норма)', reference),
+        if (flag.isNotEmpty) DetailRow('Заключение', flag, strong: true),
+      ],
+      extra: [
+        Builder(
+          builder: (sheetCtx) => Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              GradientButton(
+                label: 'Печать / Экспорт',
+                icon: Icons.print_outlined,
+                onPressed: () {
+                  Navigator.of(sheetCtx).pop();
+                  _print(r, type);
+                },
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.edit_outlined, size: 18),
+                      label: const Text('Изменить'),
+                      onPressed: () {
+                        Navigator.of(sheetCtx).pop();
+                        _openEdit(r);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.red,
+                      ),
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('Удалить'),
+                      onPressed: () {
+                        Navigator.of(sheetCtx).pop();
+                        _confirmDelete(r);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Печать / экспорт бланка результата в PDF (кириллический шрифт, превью).
+  Future<void> _print(AnalysisRecord r, AnalysisType? type) async {
+    try {
+      await printAnalysisRecord(r, type);
+    } catch (e) {
+      if (mounted) _snack(friendlyError(e), error: true);
+    }
+  }
 
   /// Открывает диалог правки записи (дозаполнить результат / исправить данные).
-  /// Диалог сам обновляет запись и инвалидирует список.
   Future<void> _openEdit(AnalysisRecord r) async {
     final saved = await showDialog<bool>(
       context: context,
       builder: (_) => _EditAnalysisDialog(r),
     );
-    if (saved == true && mounted) _snack('Запись обновлена');
+    if (saved == true && mounted) {
+      _invalidateAfterMutation();
+      _snack('Запись обновлена');
+    }
   }
 
   /// Удаление записи с подтверждением (действие необратимо).
   Future<void> _confirmDelete(AnalysisRecord r) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Удалить запись?'),
-        content: Text(
+    final ok = await confirmDialog(
+      context,
+      title: 'Удалить запись?',
+      message:
           'Анализ «${r.analysisType}» — ${r.fullName}. Действие необратимо.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Удалить'),
-          ),
-        ],
-      ),
     );
-    if (ok != true) return;
+    if (!ok) return;
     try {
       await ref.read(analysesRepositoryProvider).delete(r.id);
-      ref.invalidate(analysesListProvider);
+      _invalidateAfterMutation();
       if (mounted) _snack('Запись удалена');
     } catch (e) {
       if (mounted) _snack(friendlyError(e), error: true);
@@ -281,10 +366,17 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
   @override
   Widget build(BuildContext context) {
     final records = ref.watch(analysesListProvider);
+    // Активные виды — для выпадашки ввода; все виды — для сопоставления при
+    // отображении (запись может ссылаться на отключённый ныне вид).
+    final activeTypes =
+        ref.watch(activeAnalysisTypesProvider).valueOrNull ??
+        const <AnalysisType>[];
+    final allTypes =
+        ref.watch(analysisTypesProvider).valueOrNull ?? const <AnalysisType>[];
     final wide = MediaQuery.sizeOf(context).width >= 1000;
 
-    final form = _formCard();
-    final list = _listCard(records);
+    final form = _formCard(activeTypes);
+    final list = _listCard(records, allTypes);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Анализы')),
@@ -307,7 +399,17 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     );
   }
 
-  Widget _formCard() {
+  Widget _formCard(List<AnalysisType> activeTypes) {
+    // Имена для выпадашки: из справочника, иначе — стандартный список. Текущее
+    // выбранное значение всегда включаем, чтобы dropdown не упал.
+    final names = activeTypes.isNotEmpty
+        ? activeTypes.map((t) => t.name).toList()
+        : List<String>.from(kAnalysisTypes);
+    if (_analysisType != null && !names.contains(_analysisType)) {
+      names.add(_analysisType!);
+    }
+    final selectedType = findAnalysisType(activeTypes, _analysisType);
+
     return AppCard(
       child: Form(
         key: _formKey,
@@ -388,12 +490,12 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
             TextFormField(
               controller: _fullName,
               textCapitalization: TextCapitalization.words,
+              inputFormatters: nameFormatters,
               decoration: const InputDecoration(
                 labelText: 'ФИО пациента',
                 isDense: true,
               ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Обязательное поле' : null,
+              validator: validateName,
             ),
             const SizedBox(height: 12),
             Row(
@@ -409,15 +511,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
                       hintText: 'ГГГГ',
                       isDense: true,
                     ),
-                    validator: (v) {
-                      final t = (v ?? '').trim();
-                      if (t.isEmpty) return 'Обязательное поле';
-                      final year = int.tryParse(t);
-                      final now = DateTime.now().year;
-                      if (year == null || t.length != 4) return 'ГГГГ';
-                      if (year < 1900 || year > now) return 'Неверный год';
-                      return null;
-                    },
+                    validator: _validateYear,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -425,9 +519,11 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
                   child: TextFormField(
                     controller: _phone,
                     keyboardType: TextInputType.phone,
+                    inputFormatters: uzPhoneLocal,
                     decoration: const InputDecoration(
                       labelText: 'Телефон',
-                      hintText: 'необязательно',
+                      hintText: '700 12 34 56',
+                      prefixText: '+996 ',
                       isDense: true,
                     ),
                   ),
@@ -436,6 +532,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
+              key: ValueKey('type_$_formGen'),
               initialValue: _analysisType,
               isExpanded: true,
               decoration: const InputDecoration(
@@ -443,11 +540,16 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
                 isDense: true,
               ),
               items: [
-                for (final t in kAnalysisTypes)
+                for (final t in names)
                   DropdownMenuItem(value: t, child: Text(t)),
               ],
               validator: (v) => v == null ? 'Выберите вид анализа' : null,
-              onChanged: (v) => setState(() => _analysisType = v),
+              onChanged: (v) => setState(() {
+                _analysisType = v;
+                // Смена вида сбрасывает несовместимый результат.
+                _result.clear();
+                _resultOption = null;
+              }),
             ),
             const SizedBox(height: 12),
             TextFormField(
@@ -467,15 +569,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
               validator: (v) => _parseDate() == null ? 'Неверная дата' : null,
             ),
             const SizedBox(height: 12),
-            TextFormField(
-              controller: _result,
-              maxLines: 2,
-              decoration: const InputDecoration(
-                labelText: 'Результат',
-                hintText: 'необязательно',
-                isDense: true,
-              ),
-            ),
+            _createResultField(selectedType),
             if (_error != null) ...[
               const SizedBox(height: 12),
               Text(
@@ -488,7 +582,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
               label: 'Сохранить',
               icon: Icons.save_outlined,
               loading: _saving,
-              onPressed: _saving ? null : _save,
+              onPressed: _saving ? null : () => _save(selectedType),
             ),
           ],
         ),
@@ -496,7 +590,88 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     );
   }
 
-  Widget _listCard(AsyncValue<List<AnalysisRecord>> records) {
+  /// Поле результата, зависящее от вида анализа (задача 3):
+  /// количественный → число + единица + «живая» оценка нормы;
+  /// качественный → выбор из вариантов; иначе → свободный текст.
+  Widget _createResultField(AnalysisType? type) {
+    if (type != null && type.isQualitative) {
+      final options = type.options.isNotEmpty
+          ? type.options
+          : kDefaultQualitativeOptions;
+      final value = (_resultOption != null && options.contains(_resultOption))
+          ? _resultOption
+          : null;
+      return DropdownButtonFormField<String>(
+        key: ValueKey('qual_${type.id}'),
+        initialValue: value,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Результат',
+          hintText: 'можно заполнить позже',
+          isDense: true,
+        ),
+        items: [
+          for (final o in options) DropdownMenuItem(value: o, child: Text(o)),
+        ],
+        onChanged: (v) => setState(() => _resultOption = v),
+      );
+    }
+
+    if (type != null && type.isQuantitative) {
+      final flag = resultFlag(_result.text, type);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextFormField(
+            controller: _result,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: money(),
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: 'Результат',
+              hintText: 'число',
+              isDense: true,
+              suffixText: (type.unit ?? '').trim().isEmpty ? null : type.unit,
+            ),
+          ),
+          if (referenceRange(type).isNotEmpty || flag.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (referenceRange(type).isNotEmpty)
+                  Expanded(
+                    child: Text(
+                      'Норма: ${referenceRange(type)}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.sub,
+                      ),
+                    ),
+                  ),
+                _flagBadge(flag),
+              ],
+            ),
+          ],
+        ],
+      );
+    }
+
+    // Свободный текст — для типов вне справочника / пустого справочника.
+    return TextFormField(
+      controller: _result,
+      maxLines: 2,
+      decoration: const InputDecoration(
+        labelText: 'Результат',
+        hintText: 'необязательно',
+        isDense: true,
+      ),
+    );
+  }
+
+  Widget _listCard(
+    AsyncValue<List<AnalysisRecord>> records,
+    List<AnalysisType> allTypes,
+  ) {
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -532,7 +707,12 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
                   ),
                 );
               }
-              return Column(children: [for (final r in items) _recordTile(r)]);
+              return Column(
+                children: [
+                  for (final r in items)
+                    _recordTile(r, findAnalysisType(allTypes, r.analysisType)),
+                ],
+              );
             },
           ),
         ],
@@ -540,15 +720,16 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     );
   }
 
-  Widget _recordTile(AnalysisRecord r) {
+  Widget _recordTile(AnalysisRecord r, AnalysisType? type) {
     final pending = r.result == null || r.result!.trim().isEmpty;
+    final flag = resultFlag(r.result, type);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(AppColors.rField),
-          onTap: () => _openEdit(r),
+          onTap: () => _openDetail(r, type),
           child: Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -571,12 +752,12 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
                       ),
                     ),
                     Pill(
-                      label: _displayDate(r.date),
+                      label: _dmyFromIso(r.date),
                       color: AppColors.tealDark,
                       bg: AppColors.tealBg,
                     ),
                     const SizedBox(width: 2),
-                    _tileMenu(r),
+                    _tileMenu(r, type),
                   ],
                 ),
                 const SizedBox(height: 4),
@@ -595,9 +776,19 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
                     kind: BadgeKind.warning,
                   )
                 else
-                  Text(
-                    'Результат: ${r.result}',
-                    style: const TextStyle(fontSize: 13, color: AppColors.ink),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Результат: ${resultWithUnit(r.result, type)}',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                      ),
+                      if (flag.isNotEmpty) _flagBadge(flag),
+                    ],
                   ),
               ],
             ),
@@ -607,14 +798,15 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     );
   }
 
-  /// Меню действий записи (три точки): «Изменить» / «Удалить».
-  Widget _tileMenu(AnalysisRecord r) {
+  /// Меню действий записи (три точки): «Изменить» / «Печать» / «Удалить».
+  Widget _tileMenu(AnalysisRecord r, AnalysisType? type) {
     return PopupMenuButton<String>(
       tooltip: 'Действия',
       icon: const Icon(Icons.more_vert, size: 18, color: AppColors.sub),
       padding: EdgeInsets.zero,
       onSelected: (v) {
         if (v == 'edit') _openEdit(r);
+        if (v == 'print') _print(r, type);
         if (v == 'delete') _confirmDelete(r);
       },
       itemBuilder: (_) => const [
@@ -628,6 +820,15 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
           ),
         ),
         PopupMenuItem(
+          value: 'print',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.print_outlined),
+            title: Text('Печать / Экспорт'),
+          ),
+        ),
+        PopupMenuItem(
           value: 'delete',
           child: ListTile(
             dense: true,
@@ -638,6 +839,20 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
         ),
       ],
     );
+  }
+}
+
+/// Бейдж оценки нормы количественного результата.
+Widget _flagBadge(String flag) {
+  switch (flag) {
+    case 'норма':
+      return const StatusBadge('норма', kind: BadgeKind.success);
+    case 'выше нормы':
+      return const StatusBadge('выше нормы', kind: BadgeKind.danger);
+    case 'ниже нормы':
+      return const StatusBadge('ниже нормы', kind: BadgeKind.warning);
+    default:
+      return const SizedBox.shrink();
   }
 }
 
@@ -667,7 +882,18 @@ class _SectionTitle extends StatelessWidget {
   }
 }
 
-// ── Хелперы дат (общие для создания и диалога правки) ─────────────────────────
+// ── Валидаторы / хелперы дат (общие для создания и диалога правки) ────────────
+
+/// Валидатор года рождения (ГГГГ, 1900…текущий).
+String? _validateYear(String? v) {
+  final t = (v ?? '').trim();
+  if (t.isEmpty) return 'Обязательное поле';
+  final year = int.tryParse(t);
+  final now = DateTime.now().year;
+  if (year == null || t.length != 4) return 'ГГГГ';
+  if (year < 1900 || year > now) return 'Неверный год';
+  return null;
+}
 
 /// Форматирует [DateTime] как `ДД.ММ.ГГГГ` для полей ввода.
 String _fmtDmyDate(DateTime d) =>
@@ -707,10 +933,10 @@ String _dmyFromIso(String raw) {
   return '${m.group(3)}.${m.group(2)}.${m.group(1)}';
 }
 
-/// Диалог правки записи анализа — переиспользует поля формы создания (ФИО, год,
-/// телефон, вид анализа, дата, результат). Главный сценарий: внести результат
+/// Диалог правки записи анализа — те же поля, что и при создании, с тем же
+/// зависящим от вида вводом результата. Главный сценарий: внести результат
 /// позже или исправить опечатку. Привязка к карте пациента (`patient_id`) не
-/// меняется. По сохранении обновляет запись и инвалидирует список.
+/// меняется. По сохранении обновляет запись; список инвалидирует вызывающий.
 class _EditAnalysisDialog extends ConsumerStatefulWidget {
   const _EditAnalysisDialog(this.record);
 
@@ -729,6 +955,7 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
   late final TextEditingController _result;
   late final TextEditingController _date;
   late String? _analysisType;
+  String? _resultOption;
   bool _saving = false;
   String? _error;
 
@@ -738,8 +965,9 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
     final r = widget.record;
     _fullName = TextEditingController(text: r.fullName);
     _birthYear = TextEditingController(text: r.birthYear.toString());
-    _phone = TextEditingController(text: r.phone ?? '');
+    _phone = TextEditingController(text: extractUzPhoneLocal(r.phone));
     _result = TextEditingController(text: r.result ?? '');
+    _resultOption = (r.result ?? '').trim().isEmpty ? null : r.result!.trim();
     _date = TextEditingController(text: _dmyFromIso(r.date));
     _analysisType = r.analysisType;
   }
@@ -766,7 +994,7 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
     if (picked != null) setState(() => _date.text = _fmtDmyDate(picked));
   }
 
-  Future<void> _save() async {
+  Future<void> _save(AnalysisType? selectedType) async {
     if (!_formKey.currentState!.validate()) return;
     if (_analysisType == null) {
       setState(() => _error = 'Выберите вид анализа');
@@ -788,12 +1016,12 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
             widget.record.id,
             fullName: _fullName.text.trim(),
             birthYear: int.parse(_birthYear.text.trim()),
-            phone: _phone.text.trim(),
+            // Пустая строка очищает телефон; assembleUzPhone(...) даёт +996….
+            phone: assembleUzPhone(_phone.text) ?? '',
             analysisType: _analysisType,
-            result: _result.text.trim(),
+            result: _resultFor(selectedType),
             date: iso,
           );
-      ref.invalidate(analysesListProvider);
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) setState(() => _error = friendlyError(e));
@@ -802,15 +1030,26 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
     }
   }
 
+  /// Итоговая строка результата (пустая = очистить). Для качественного вида —
+  /// выбранный вариант; иначе — текст/число из поля.
+  String _resultFor(AnalysisType? type) {
+    if (type != null && type.isQualitative) return _resultOption?.trim() ?? '';
+    return _result.text.trim();
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Вид анализа записи может отсутствовать в справочнике (старые данные) —
-    // добавим его в список, чтобы dropdown не упал на неизвестном значении.
-    final types = <String>[
-      ...kAnalysisTypes,
-      if (_analysisType != null && !kAnalysisTypes.contains(_analysisType))
-        _analysisType!,
-    ];
+    // Для правки берём все виды (запись может ссылаться на отключённый вид).
+    final allTypes =
+        ref.watch(analysisTypesProvider).valueOrNull ?? const <AnalysisType>[];
+    final names = allTypes.isNotEmpty
+        ? allTypes.map((t) => t.name).toList()
+        : List<String>.from(kAnalysisTypes);
+    if (_analysisType != null && !names.contains(_analysisType)) {
+      names.add(_analysisType!);
+    }
+    final selectedType = findAnalysisType(allTypes, _analysisType);
+
     return AlertDialog(
       title: const Text('Изменить запись'),
       content: SizedBox(
@@ -825,13 +1064,12 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
                 TextFormField(
                   controller: _fullName,
                   textCapitalization: TextCapitalization.words,
+                  inputFormatters: nameFormatters,
                   decoration: const InputDecoration(
                     labelText: 'ФИО пациента',
                     isDense: true,
                   ),
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'Обязательное поле'
-                      : null,
+                  validator: validateName,
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -847,15 +1085,7 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
                           hintText: 'ГГГГ',
                           isDense: true,
                         ),
-                        validator: (v) {
-                          final t = (v ?? '').trim();
-                          if (t.isEmpty) return 'Обязательное поле';
-                          final year = int.tryParse(t);
-                          final now = DateTime.now().year;
-                          if (year == null || t.length != 4) return 'ГГГГ';
-                          if (year < 1900 || year > now) return 'Неверный год';
-                          return null;
-                        },
+                        validator: _validateYear,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -863,9 +1093,11 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
                       child: TextFormField(
                         controller: _phone,
                         keyboardType: TextInputType.phone,
+                        inputFormatters: uzPhoneLocal,
                         decoration: const InputDecoration(
                           labelText: 'Телефон',
-                          hintText: 'необязательно',
+                          hintText: '700 12 34 56',
+                          prefixText: '+996 ',
                           isDense: true,
                         ),
                       ),
@@ -881,11 +1113,15 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
                     isDense: true,
                   ),
                   items: [
-                    for (final t in types)
+                    for (final t in names)
                       DropdownMenuItem(value: t, child: Text(t)),
                   ],
                   validator: (v) => v == null ? 'Выберите вид анализа' : null,
-                  onChanged: (v) => setState(() => _analysisType = v),
+                  onChanged: (v) => setState(() {
+                    _analysisType = v;
+                    _result.clear();
+                    _resultOption = null;
+                  }),
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
@@ -906,15 +1142,7 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
                       _parseDmy(_date.text) == null ? 'Неверная дата' : null,
                 ),
                 const SizedBox(height: 12),
-                TextFormField(
-                  controller: _result,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'Результат',
-                    hintText: 'можно заполнить позже',
-                    isDense: true,
-                  ),
-                ),
+                _resultField(selectedType),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
                   Text(
@@ -935,7 +1163,7 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
           child: const Text('Отмена'),
         ),
         FilledButton(
-          onPressed: _saving ? null : _save,
+          onPressed: _saving ? null : () => _save(selectedType),
           child: _saving
               ? const SizedBox(
                   width: 18,
@@ -945,6 +1173,88 @@ class _EditAnalysisDialogState extends ConsumerState<_EditAnalysisDialog> {
               : const Text('Сохранить'),
         ),
       ],
+    );
+  }
+
+  /// Ввод результата по виду анализа (как в форме создания).
+  Widget _resultField(AnalysisType? type) {
+    if (type != null && type.isQualitative) {
+      final options = <String>[
+        ...(type.options.isNotEmpty
+            ? type.options
+            : kDefaultQualitativeOptions),
+      ];
+      // Текущее значение вне списка вариантов (легаси) — добавим, чтобы показать.
+      if (_resultOption != null &&
+          _resultOption!.isNotEmpty &&
+          !options.contains(_resultOption)) {
+        options.add(_resultOption!);
+      }
+      return DropdownButtonFormField<String>(
+        key: ValueKey('qual_${type.id}'),
+        initialValue: (_resultOption != null && options.contains(_resultOption))
+            ? _resultOption
+            : null,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          labelText: 'Результат',
+          hintText: 'можно заполнить позже',
+          isDense: true,
+        ),
+        items: [
+          for (final o in options) DropdownMenuItem(value: o, child: Text(o)),
+        ],
+        onChanged: (v) => setState(() => _resultOption = v),
+      );
+    }
+
+    if (type != null && type.isQuantitative) {
+      final flag = resultFlag(_result.text, type);
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextFormField(
+            controller: _result,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: money(),
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: 'Результат',
+              hintText: 'число',
+              isDense: true,
+              suffixText: (type.unit ?? '').trim().isEmpty ? null : type.unit,
+            ),
+          ),
+          if (referenceRange(type).isNotEmpty || flag.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (referenceRange(type).isNotEmpty)
+                  Expanded(
+                    child: Text(
+                      'Норма: ${referenceRange(type)}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.sub,
+                      ),
+                    ),
+                  ),
+                _flagBadge(flag),
+              ],
+            ),
+          ],
+        ],
+      );
+    }
+
+    return TextFormField(
+      controller: _result,
+      maxLines: 2,
+      decoration: const InputDecoration(
+        labelText: 'Результат',
+        hintText: 'можно заполнить позже',
+        isDense: true,
+      ),
     );
   }
 }

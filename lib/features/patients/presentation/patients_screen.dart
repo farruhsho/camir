@@ -7,6 +7,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/input_formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
+import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../analyses/data/analyses_repository.dart';
 import '../../analyses/domain/analysis_record.dart';
@@ -15,6 +16,7 @@ import '../../fibroscan/data/fibroscan_repository.dart';
 import '../../fibroscan/domain/fibroscan_record.dart';
 import '../data/patients_repository.dart';
 import '../domain/patient.dart';
+import 'birth_date_field.dart';
 
 /// Текущий поисковый запрос по картотеке (дебаунсится экраном).
 final patientsQueryProvider = StateProvider.autoDispose<String>((ref) => '');
@@ -67,6 +69,14 @@ String _dmy(DateTime d) =>
     '${d.day.toString().padLeft(2, '0')}.'
     '${d.month.toString().padLeft(2, '0')}.'
     '${d.year}';
+
+/// Валидатор необязательного ФИО-поля (отчество): пусто — допустимо, цифры —
+/// нет. Ввод и так фильтруется [nameFormatters], это защита от вставки.
+String? _optionalName(String? v) {
+  final t = (v ?? '').trim();
+  if (t.isEmpty) return null;
+  return RegExp(r'[0-9]').hasMatch(t) ? 'Без цифр' : null;
+}
 
 /// База пациентов «Цадмир»: поиск + список. Тап по пациенту открывает карту с
 /// историей (Фиброскан · Анализы). Данные — из Firestore.
@@ -169,9 +179,13 @@ class _PatientsScreenState extends ConsumerState<PatientsScreen> {
   }
 
   Widget _patientTile(Patient p) {
+    final age = p.age;
     final line = <String>[
       '№ ${p.mrn}',
-      'г.р. ${p.birthYear}',
+      if (p.birthDisplay.isNotEmpty)
+        age != null
+            ? '${p.birthDisplay} · $age ${yearsWord(age)}'
+            : p.birthDisplay,
       if (p.phone != null) p.phone!,
     ].join('  ·  ');
     return AppCard(
@@ -279,9 +293,16 @@ class _PatientCardPageState extends ConsumerState<_PatientCardPage> {
   }
 
   Widget _header() {
+    final age = _patient.age;
     final chips = <Widget>[
       _infoChip(Icons.badge_outlined, '№ карты ${_patient.mrn}'),
-      _infoChip(Icons.cake_outlined, 'г.р. ${_patient.birthYear}'),
+      if (_patient.birthDisplay.isNotEmpty)
+        _infoChip(
+          Icons.cake_outlined,
+          age != null
+              ? '${_patient.birthDisplay} · $age ${yearsWord(age)}'
+              : _patient.birthDisplay,
+        ),
       if (_patient.phone != null)
         _infoChip(Icons.phone_outlined, _patient.phone!),
       if (_patient.referralLabel != null)
@@ -394,6 +415,7 @@ class _PatientCardPageState extends ConsumerState<_PatientCardPage> {
                       title: r.diagnosis,
                       badgeColor: AppColors.tealDark,
                       badgeBg: AppColors.tealBg,
+                      onTap: () => _showFibroscanDetail(r),
                     ),
                 ],
               );
@@ -401,6 +423,28 @@ class _PatientCardPageState extends ConsumerState<_PatientCardPage> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Детальный просмотр записи фиброскана — все поля через [showDetailSheet].
+  void _showFibroscanDetail(FibroscanRecord r) {
+    showDetailSheet(
+      context,
+      title: 'Фиброскан',
+      rows: [
+        DetailRow('Дата', _isoToDmy(r.date)),
+        DetailRow('Диагноз', r.diagnosis, strong: true),
+        const DetailRow.section('Пациент'),
+        DetailRow('ФИО', r.fullName),
+        DetailRow(
+          'Год рождения',
+          r.birthYear > 0 ? r.birthYear.toString() : '',
+        ),
+        DetailRow(
+          'Привязка к карте',
+          r.patientId != null ? 'да' : 'нет (ручная запись)',
+        ),
+      ],
     );
   }
 
@@ -427,6 +471,7 @@ class _PatientCardPageState extends ConsumerState<_PatientCardPage> {
                           : null,
                       badgeColor: AppColors.blue,
                       badgeBg: AppColors.blueBg,
+                      onTap: () => _showAnalysisDetail(r),
                     ),
                 ],
               );
@@ -437,15 +482,40 @@ class _PatientCardPageState extends ConsumerState<_PatientCardPage> {
     );
   }
 
+  /// Детальный просмотр записи анализа — все поля через [showDetailSheet].
+  void _showAnalysisDetail(AnalysisRecord r) {
+    showDetailSheet(
+      context,
+      title: 'Анализ',
+      rows: [
+        DetailRow('Дата', _isoToDmy(r.date)),
+        DetailRow('Вид анализа', r.analysisType, strong: true),
+        if (r.result != null && r.result!.isNotEmpty)
+          DetailRow('Результат', r.result!),
+        const DetailRow.section('Пациент'),
+        DetailRow('ФИО', r.fullName),
+        DetailRow(
+          'Год рождения',
+          r.birthYear > 0 ? r.birthYear.toString() : '',
+        ),
+        if (r.phone != null) DetailRow('Телефон', r.phone!),
+        DetailRow(
+          'Привязка к карте',
+          r.patientId != null ? 'да' : 'нет (ручная запись)',
+        ),
+      ],
+    );
+  }
+
   Widget _historyRow({
     required String date,
     required String title,
     String? subtitle,
     required Color badgeColor,
     required Color badgeBg,
+    VoidCallback? onTap,
   }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
+    final row = Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.card,
@@ -467,6 +537,14 @@ class _PatientCardPageState extends ConsumerState<_PatientCardPage> {
                 ),
               ),
               Pill(label: date, color: badgeColor, bg: badgeBg),
+              if (onTap != null) ...[
+                const SizedBox(width: 6),
+                const Icon(
+                  Icons.chevron_right,
+                  size: 18,
+                  color: AppColors.muted,
+                ),
+              ],
             ],
           ),
           if (subtitle != null) ...[
@@ -478,6 +556,19 @@ class _PatientCardPageState extends ConsumerState<_PatientCardPage> {
           ],
         ],
       ),
+    );
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: onTap == null
+          ? row
+          : Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppColors.rField),
+                onTap: onTap,
+                child: row,
+              ),
+            ),
     );
   }
 }
@@ -512,9 +603,8 @@ class _PatientEditDialogState extends ConsumerState<_PatientEditDialog> {
   late final _middleName = TextEditingController(
     text: widget.patient.middleName ?? '',
   );
-  late final _birthYear = TextEditingController(
-    text: widget.patient.birthYear.toString(),
-  );
+  late DateTime? _birthDate = widget.patient.birthDate;
+  String? _birthDateError;
   late final _phone = TextEditingController(
     text: extractUzPhoneLocal(widget.patient.phone),
   );
@@ -534,7 +624,6 @@ class _PatientEditDialogState extends ConsumerState<_PatientEditDialog> {
       _lastName,
       _firstName,
       _middleName,
-      _birthYear,
       _phone,
       _disease,
       _consultation,
@@ -545,7 +634,14 @@ class _PatientEditDialogState extends ConsumerState<_PatientEditDialog> {
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    final formOk = _formKey.currentState!.validate();
+    // Дата рождения обязательна, если у карты не сохранён даже устаревший год
+    // (не заставляем «выдумывать» день/месяц для старых карт с одним годом).
+    final legacyYear = widget.patient.birthYear;
+    if (_birthDate == null && legacyYear <= 0) {
+      setState(() => _birthDateError = 'Укажите дату рождения');
+    }
+    if (!formOk || (_birthDate == null && legacyYear <= 0)) return;
     setState(() {
       _saving = true;
       _error = null;
@@ -558,7 +654,8 @@ class _PatientEditDialogState extends ConsumerState<_PatientEditDialog> {
             lastName: _lastName.text.trim(),
             firstName: _firstName.text.trim(),
             middleName: _middleName.text.trim(),
-            birthYear: int.parse(_birthYear.text.trim()),
+            birthYear: _birthDate?.year ?? legacyYear,
+            birthDate: _birthDate,
             phone: assembleUzPhone(_phone.text),
             disease: _disease.text.trim(),
             referral: _referral,
@@ -588,48 +685,38 @@ class _PatientEditDialogState extends ConsumerState<_PatientEditDialog> {
                 TextFormField(
                   controller: _lastName,
                   textCapitalization: TextCapitalization.words,
+                  inputFormatters: nameFormatters,
                   decoration: const InputDecoration(labelText: 'Фамилия'),
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'Обязательное поле'
-                      : null,
+                  validator: validateName,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _firstName,
                   textCapitalization: TextCapitalization.words,
+                  inputFormatters: nameFormatters,
                   decoration: const InputDecoration(labelText: 'Имя'),
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'Обязательное поле'
-                      : null,
+                  validator: validateName,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _middleName,
                   textCapitalization: TextCapitalization.words,
+                  inputFormatters: nameFormatters,
                   decoration: const InputDecoration(labelText: 'Отчество'),
+                  validator: _optionalName,
                 ),
                 const SizedBox(height: 12),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
-                      child: TextFormField(
-                        controller: _birthYear,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: digitsOnly(4),
-                        decoration: const InputDecoration(
-                          labelText: 'Год рождения',
-                          hintText: 'ГГГГ',
-                        ),
-                        validator: (v) {
-                          final t = (v ?? '').trim();
-                          if (t.isEmpty) return 'Обязательное поле';
-                          final year = int.tryParse(t);
-                          final now = DateTime.now().year;
-                          if (year == null || t.length != 4) return 'ГГГГ';
-                          if (year < 1900 || year > now) return 'Неверный год';
-                          return null;
-                        },
+                      child: BirthDateField(
+                        value: _birthDate,
+                        errorText: _birthDateError,
+                        onChanged: (v) => setState(() {
+                          _birthDate = v;
+                          _birthDateError = null;
+                        }),
                       ),
                     ),
                     const SizedBox(width: 12),

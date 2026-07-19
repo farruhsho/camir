@@ -5,6 +5,8 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/input_formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
+import '../../../core/widgets/confirm_dialog.dart';
+import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
 import '../data/warehouse_repository.dart';
@@ -12,12 +14,14 @@ import '../domain/warehouse_movement.dart';
 import '../domain/warehouse_product.dart';
 
 /// Склад на Firestore (без бэкенда): каталог товаров с текущим остатком,
-/// бейдж «мало» при остатке ≤ минимума, добавление товара, приход/расход по
-/// товару (кол-во + причина + дата) и журнал движений. Остаток считается из
-/// коллекции `stock_movements` на клиенте.
+/// бейдж «мало» при остатке ≤ минимума, добавление/правка/мягкое удаление
+/// товара, приход/расход по товару (кол-во + причина + дата), сторно движения
+/// и журнал движений. Остаток ведётся авторитетным полем `products/{id}.stock`.
 ///
-/// Действия гейтятся правами: `inventory.manage` — товар/приход,
-/// `inventory.write_off` — расход. Просмотр — `inventory.read` (гейт в меню).
+/// Действия гейтятся правами: `inventory.manage` — товар (создание/правка) и
+/// приход, `inventory.write_off` — расход. Удаление товара и сторно движения —
+/// только супер-админ (`isSuperuser`). Просмотр — `inventory.read` (гейт в меню).
+/// Тап по строке товара/движения открывает детальный просмотр со всеми полями.
 class InventoryScreen extends ConsumerWidget {
   const InventoryScreen({super.key});
 
@@ -26,14 +30,16 @@ class InventoryScreen extends ConsumerWidget {
     final user = ref.watch(authControllerProvider).user;
     final canManage = user?.can('inventory.manage') ?? false;
     final canWriteOff = user?.can('inventory.write_off') ?? false;
+    final isSuperuser = user?.isSuperuser ?? false;
 
     final wide = MediaQuery.sizeOf(context).width >= 1000;
 
     final products = _ProductsCard(
       canManage: canManage,
       canWriteOff: canWriteOff,
+      isSuperuser: isSuperuser,
     );
-    final log = const _MovementsCard();
+    final log = _MovementsCard(isSuperuser: isSuperuser);
 
     return Scaffold(
       appBar: AppBar(
@@ -72,10 +78,15 @@ class InventoryScreen extends ConsumerWidget {
 // ═══ Карточка: товары с остатком ═════════════════════════════════════════════
 
 class _ProductsCard extends ConsumerWidget {
-  const _ProductsCard({required this.canManage, required this.canWriteOff});
+  const _ProductsCard({
+    required this.canManage,
+    required this.canWriteOff,
+    required this.isSuperuser,
+  });
 
   final bool canManage;
   final bool canWriteOff;
+  final bool isSuperuser;
 
   Future<void> _addProduct(BuildContext context, WidgetRef ref) async {
     final ok = await showDialog<bool>(
@@ -84,6 +95,7 @@ class _ProductsCard extends ConsumerWidget {
     );
     if (ok == true && context.mounted) {
       ref.invalidate(warehouseStockProvider);
+      ref.invalidate(warehouseMovementsProvider);
       _snack(context, 'Товар добавлен');
     }
   }
@@ -127,6 +139,7 @@ class _ProductsCard extends ConsumerWidget {
                       data: ps,
                       canManage: canManage,
                       canWriteOff: canWriteOff,
+                      isSuperuser: isSuperuser,
                     ),
                 ],
               );
@@ -143,11 +156,13 @@ class _ProductTile extends ConsumerWidget {
     required this.data,
     required this.canManage,
     required this.canWriteOff,
+    required this.isSuperuser,
   });
 
   final ProductStock data;
   final bool canManage;
   final bool canWriteOff;
+  final bool isSuperuser;
 
   Future<void> _move(BuildContext context, WidgetRef ref, String kind) async {
     final ok = await showDialog<bool>(
@@ -164,6 +179,120 @@ class _ProductTile extends ConsumerWidget {
     }
   }
 
+  /// Детальный просмотр товара: все поля + текущий остаток + недавние движения.
+  Future<void> _openDetail(BuildContext context, WidgetRef ref) async {
+    final p = data.product;
+    final recent =
+        (ref.read(warehouseMovementsProvider).valueOrNull ??
+                const <WarehouseMovement>[])
+            .where((m) => m.productId == p.id)
+            .take(12)
+            .toList();
+
+    final rows = <DetailRow>[
+      const DetailRow.section('Товар'),
+      DetailRow('Название', p.name, strong: true),
+      DetailRow('Категория', p.category ?? ''),
+      DetailRow('Единица', p.unit),
+      if (p.minStock != null) DetailRow('Мин. остаток', _trimNum(p.minStock!)),
+      DetailRow(
+        'Текущий остаток',
+        '${_trimNum(data.stock)} ${p.unit}',
+        strong: true,
+      ),
+      if (data.low) const DetailRow('Статус', 'Мало на складе'),
+      if (p.createdAt != null)
+        DetailRow('Добавлен', _fmtDateTime(p.createdAt!)),
+      if (p.updatedAt != null)
+        DetailRow('Обновлён', _fmtDateTime(p.updatedAt!)),
+      DetailRow('ID', p.id),
+      const DetailRow.section('Последние движения'),
+      if (recent.isEmpty)
+        const DetailRow('Движения', 'нет')
+      else
+        for (final m in recent)
+          DetailRow(
+            _displayDate(m.date),
+            '${m.kindLabel}  ${m.isIn ? '+' : '−'}${_trimNum(m.qty)}'
+            '${m.reason != null && m.reason!.isNotEmpty ? '  ·  ${m.reason}' : ''}',
+          ),
+    ];
+
+    final extra = <Widget>[];
+    if (canManage || isSuperuser) {
+      extra.add(
+        Row(
+          children: [
+            if (canManage)
+              Expanded(
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  label: const Text('Изменить'),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    _edit(context, ref);
+                  },
+                ),
+              ),
+            if (canManage && isSuperuser) const SizedBox(width: 12),
+            if (isSuperuser)
+              Expanded(
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: const Text('Удалить'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.red,
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    _delete(context, ref);
+                  },
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    await showDetailSheet(context, title: p.name, rows: rows, extra: extra);
+  }
+
+  Future<void> _edit(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => _ProductDialog(product: data.product),
+    );
+    if (ok == true && context.mounted) {
+      ref.invalidate(warehouseStockProvider);
+      ref.invalidate(warehouseMovementsProvider);
+      _snack(context, 'Товар обновлён');
+    }
+  }
+
+  Future<void> _delete(BuildContext context, WidgetRef ref) async {
+    final p = data.product;
+    final ok = await confirmDialog(
+      context,
+      title: 'Удалить товар?',
+      message:
+          'Товар «${p.name}» будет скрыт из каталога. '
+          'История движений сохранится.',
+    );
+    if (!ok) return;
+    try {
+      await ref
+          .read(warehouseRepositoryProvider)
+          .archiveProduct(p.id, name: p.name);
+      if (context.mounted) {
+        ref.invalidate(warehouseStockProvider);
+        ref.invalidate(warehouseMovementsProvider);
+        _snack(context, 'Товар удалён');
+      }
+    } catch (e) {
+      if (context.mounted) _snack(context, friendlyError(e), error: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final p = data.product;
@@ -173,85 +302,100 @@ class _ProductTile extends ConsumerWidget {
       if (p.minStock != null) 'мин. ${_trimNum(p.minStock!)}',
     ].join('  ·  ');
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
         color: AppColors.card,
         borderRadius: BorderRadius.circular(AppColors.rField),
-        border: Border.all(color: AppColors.line),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
+        child: InkWell(
+          onTap: () => _openDetail(context, ref),
+          borderRadius: BorderRadius.circular(AppColors.rField),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.rField),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      p.name,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.ink,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            p.name,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.ink,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            subtitle,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: AppColors.sub,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        color: AppColors.sub,
-                      ),
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          '${_trimNum(data.stock)} ${p.unit}',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 16,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                        if (data.low) ...[
+                          const SizedBox(height: 4),
+                          const StatusBadge('мало', kind: BadgeKind.warning),
+                        ],
+                      ],
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '${_trimNum(data.stock)} ${p.unit}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: 16,
-                      color: AppColors.ink,
-                    ),
+                if (canManage || canWriteOff) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      if (canManage)
+                        TextButton.icon(
+                          icon: const Icon(Icons.add_circle_outline, size: 18),
+                          label: const Text('Приход'),
+                          onPressed: () =>
+                              _move(context, ref, WarehouseMovement.kIn),
+                        ),
+                      if (canWriteOff)
+                        TextButton.icon(
+                          icon: const Icon(
+                            Icons.remove_circle_outline,
+                            size: 18,
+                          ),
+                          label: const Text('Расход'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppColors.red,
+                          ),
+                          onPressed: () =>
+                              _move(context, ref, WarehouseMovement.kOut),
+                        ),
+                    ],
                   ),
-                  if (data.low) ...[
-                    const SizedBox(height: 4),
-                    const StatusBadge('мало', kind: BadgeKind.warning),
-                  ],
                 ],
-              ),
-            ],
-          ),
-          if (canManage || canWriteOff) ...[
-            const SizedBox(height: 6),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (canManage)
-                  TextButton.icon(
-                    icon: const Icon(Icons.add_circle_outline, size: 18),
-                    label: const Text('Приход'),
-                    onPressed: () => _move(context, ref, WarehouseMovement.kIn),
-                  ),
-                if (canWriteOff)
-                  TextButton.icon(
-                    icon: const Icon(Icons.remove_circle_outline, size: 18),
-                    label: const Text('Расход'),
-                    style: TextButton.styleFrom(foregroundColor: AppColors.red),
-                    onPressed: () =>
-                        _move(context, ref, WarehouseMovement.kOut),
-                  ),
               ],
             ),
-          ],
-        ],
+          ),
+        ),
       ),
     );
   }
@@ -260,7 +404,9 @@ class _ProductTile extends ConsumerWidget {
 // ═══ Карточка: журнал движений ═══════════════════════════════════════════════
 
 class _MovementsCard extends ConsumerWidget {
-  const _MovementsCard();
+  const _MovementsCard({required this.isSuperuser});
+
+  final bool isSuperuser;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -310,7 +456,11 @@ class _MovementsCard extends ConsumerWidget {
               return Column(
                 children: [
                   for (final m in items)
-                    _MovementTile(movement: m, name: names[m.productId]),
+                    _MovementTile(
+                      movement: m,
+                      name: names[m.productId],
+                      isSuperuser: isSuperuser,
+                    ),
                 ],
               );
             },
@@ -321,84 +471,172 @@ class _MovementsCard extends ConsumerWidget {
   }
 }
 
-class _MovementTile extends StatelessWidget {
-  const _MovementTile({required this.movement, this.name});
+class _MovementTile extends ConsumerWidget {
+  const _MovementTile({
+    required this.movement,
+    this.name,
+    required this.isSuperuser,
+  });
 
   final WarehouseMovement movement;
   final String? name;
+  final bool isSuperuser;
+
+  /// Детальный просмотр движения: тип, количество, причина, даты, id.
+  Future<void> _openDetail(BuildContext context, WidgetRef ref) async {
+    final m = movement;
+    final rows = <DetailRow>[
+      const DetailRow.section('Движение'),
+      if (name != null && name!.isNotEmpty)
+        DetailRow('Товар', name!, strong: true),
+      DetailRow('Тип', m.kindLabel, strong: true),
+      DetailRow('Количество', '${m.isIn ? '+' : '−'}${_trimNum(m.qty)}'),
+      DetailRow('Причина', m.reason ?? ''),
+      DetailRow('Дата', _displayDate(m.date)),
+      if (m.createdAt != null) DetailRow('Создано', _fmtDateTime(m.createdAt!)),
+      DetailRow('ID', m.id),
+    ];
+
+    final extra = <Widget>[];
+    if (isSuperuser) {
+      extra.add(
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.undo, size: 18),
+            label: const Text('Сторнировать'),
+            style: OutlinedButton.styleFrom(foregroundColor: AppColors.red),
+            onPressed: () {
+              Navigator.of(context).pop();
+              _void(context, ref);
+            },
+          ),
+        ),
+      );
+    }
+
+    await showDetailSheet(
+      context,
+      title: '${m.kindLabel} · ${name ?? 'Товар'}',
+      rows: rows,
+      extra: extra,
+    );
+  }
+
+  Future<void> _void(BuildContext context, WidgetRef ref) async {
+    final ok = await confirmDialog(
+      context,
+      title: 'Сторнировать движение?',
+      message:
+          'Будет создано обратное движение '
+          '(${movement.isIn ? 'расход' : 'приход'} ${_trimNum(movement.qty)}). '
+          'Остаток вернётся к прежнему значению.',
+      confirmLabel: 'Сторнировать',
+    );
+    if (!ok) return;
+    try {
+      await ref.read(warehouseRepositoryProvider).voidMovement(movement.id);
+      if (context.mounted) {
+        ref.invalidate(warehouseStockProvider);
+        ref.invalidate(warehouseMovementsProvider);
+        _snack(context, 'Движение сторнировано');
+      }
+    } catch (e) {
+      if (context.mounted) _snack(context, friendlyError(e), error: true);
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isIn = movement.isIn;
     final sign = isIn ? '+' : '−';
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
         color: AppColors.card,
         borderRadius: BorderRadius.circular(AppColors.rField),
-        border: Border.all(color: AppColors.line),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            isIn ? Icons.south_west : Icons.north_east,
-            size: 18,
-            color: isIn ? AppColors.green : AppColors.red,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
+        child: InkWell(
+          onTap: () => _openDetail(context, ref),
+          borderRadius: BorderRadius.circular(AppColors.rField),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppColors.rField),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  name ?? 'Товар',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.ink,
+                Icon(
+                  isIn ? Icons.south_west : Icons.north_east,
+                  size: 18,
+                  color: isIn ? AppColors.green : AppColors.red,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name ?? 'Товар',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.ink,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        [
+                          movement.kindLabel,
+                          if (movement.reason != null &&
+                              movement.reason!.isNotEmpty)
+                            movement.reason!,
+                        ].join('  ·  '),
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          color: AppColors.sub,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  [
-                    movement.kindLabel,
-                    if (movement.reason != null && movement.reason!.isNotEmpty)
-                      movement.reason!,
-                  ].join('  ·  '),
-                  style: const TextStyle(fontSize: 12.5, color: AppColors.sub),
+                const SizedBox(width: 8),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '$sign${_trimNum(movement.qty)}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: isIn ? AppColors.green : AppColors.red,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _displayDate(movement.date),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                '$sign${_trimNum(movement.qty)}',
-                style: TextStyle(
-                  fontWeight: FontWeight.w800,
-                  color: isIn ? AppColors.green : AppColors.red,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                _displayDate(movement.date),
-                style: const TextStyle(fontSize: 12, color: AppColors.muted),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
 }
 
-// ═══ Диалог: добавить товар ══════════════════════════════════════════════════
+// ═══ Диалог: добавить / редактировать товар ══════════════════════════════════
 
 class _ProductDialog extends ConsumerStatefulWidget {
-  const _ProductDialog();
+  const _ProductDialog({this.product});
+
+  /// null — создание нового товара; иначе — правка существующего.
+  final WarehouseProduct? product;
 
   @override
   ConsumerState<_ProductDialog> createState() => _ProductDialogState();
@@ -412,6 +650,20 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
   String _unit = kWarehouseUnits.first;
   bool _saving = false;
   String? _error;
+
+  bool get _isEdit => widget.product != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final p = widget.product;
+    if (p != null) {
+      _name.text = p.name;
+      _category.text = p.category ?? '';
+      _minStock.text = p.minStock != null ? _trimNum(p.minStock!) : '';
+      _unit = kWarehouseUnits.contains(p.unit) ? p.unit : kWarehouseUnits.first;
+    }
+  }
 
   @override
   void dispose() {
@@ -428,17 +680,28 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
       _error = null;
     });
     try {
-      final minRaw = _minStock.text.trim().replaceAll(',', '.');
-      await ref
-          .read(warehouseRepositoryProvider)
-          .addProduct(
-            name: _name.text.trim(),
-            category: _category.text.trim().isEmpty
-                ? null
-                : _category.text.trim(),
-            unit: _unit,
-            minStock: minRaw.isEmpty ? null : num.tryParse(minRaw),
-          );
+      final minRaw = _minStock.text.trim();
+      final minStock = minRaw.isEmpty ? null : num.tryParse(minRaw);
+      final category = _category.text.trim().isEmpty
+          ? null
+          : _category.text.trim();
+      final repo = ref.read(warehouseRepositoryProvider);
+      if (_isEdit) {
+        await repo.updateProduct(
+          widget.product!.id,
+          name: _name.text.trim(),
+          category: category,
+          unit: _unit,
+          minStock: minStock,
+        );
+      } else {
+        await repo.addProduct(
+          name: _name.text.trim(),
+          category: category,
+          unit: _unit,
+          minStock: minStock,
+        );
+      }
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
@@ -453,7 +716,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Новый товар'),
+      title: Text(_isEdit ? 'Редактировать товар' : 'Новый товар'),
       content: SizedBox(
         width: 420,
         child: Form(
@@ -465,6 +728,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
               TextFormField(
                 controller: _name,
                 textCapitalization: TextCapitalization.sentences,
+                maxLength: 80,
                 decoration: const InputDecoration(
                   labelText: 'Название',
                   isDense: true,
@@ -473,9 +737,10 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                     ? 'Обязательное поле'
                     : null,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 4),
               TextFormField(
                 controller: _category,
+                maxLength: 60,
                 decoration: const InputDecoration(
                   labelText: 'Категория (необязательно)',
                   hintText: 'расходники, реактивы…',
@@ -504,14 +769,16 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                   Expanded(
                     child: TextFormField(
                       controller: _minStock,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: digitsOnly(6),
                       decoration: const InputDecoration(
                         labelText: 'Мин. остаток',
                         hintText: 'необязательно',
                         isDense: true,
                       ),
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? null
+                          : validatePositiveNum(v),
                     ),
                   ),
                 ],
@@ -540,7 +807,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                   width: 18,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Text('Добавить'),
+              : Text(_isEdit ? 'Сохранить' : 'Добавить'),
         ),
       ],
     );
@@ -661,29 +928,25 @@ class _MovementDialogState extends ConsumerState<_MovementDialog> {
               TextFormField(
                 controller: _qty,
                 autofocus: true,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
+                keyboardType: TextInputType.number,
+                inputFormatters: digitsOnly(6),
                 decoration: InputDecoration(
                   labelText: 'Количество (${p.unit})',
                   isDense: true,
                 ),
-                validator: (v) {
-                  final q = num.tryParse((v ?? '').trim().replaceAll(',', '.'));
-                  if (q == null || q <= 0) return 'Больше нуля';
-                  return null;
-                },
+                validator: validatePositiveNum,
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _reason,
+                maxLength: 120,
                 decoration: InputDecoration(
                   labelText: 'Причина (необязательно)',
                   hintText: _isIn ? 'поставка, возврат…' : 'плановый расход…',
                   isDense: true,
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 4),
               TextFormField(
                 controller: _date,
                 keyboardType: TextInputType.number,
@@ -779,6 +1042,12 @@ String _fmtDmy(DateTime d) =>
     '${d.day.toString().padLeft(2, '0')}.'
     '${d.month.toString().padLeft(2, '0')}.'
     '${d.year}';
+
+/// Дата-время для детального просмотра: `ДД.ММ.ГГГГ ЧЧ:ММ`.
+String _fmtDateTime(DateTime d) =>
+    '${_fmtDmy(d)} '
+    '${d.hour.toString().padLeft(2, '0')}:'
+    '${d.minute.toString().padLeft(2, '0')}';
 
 /// Парсит `ДД.ММ.ГГГГ` в [DateTime] (с проверкой на «перетекание»), иначе null.
 DateTime? _parseDmy(String raw) {

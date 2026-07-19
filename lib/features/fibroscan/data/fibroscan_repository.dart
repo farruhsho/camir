@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../audit/data/audit_repository.dart';
 import '../domain/fibroscan_record.dart';
 
 final fibroscanRepositoryProvider = Provider<FibroscanRepository>(
@@ -81,14 +82,17 @@ class FibroscanRepository {
   }
 
   /// Создаёт запись исследования. [patientId] опускается для разовой записи без
-  /// карты. [date] уже в ISO `YYYY-MM-DD` (конвертирует экран). Штампует
-  /// `created_by`.
+  /// карты. [date] уже в ISO `YYYY-MM-DD` (конвертирует экран). [lsm]/[cap] —
+  /// измерения прибора (кПа / дБ/м), необязательны. Штампует `created_by` и
+  /// пишет запись аудита (best-effort — аудит не роняет операцию).
   Future<FibroscanRecord> create({
     String? patientId,
     required String fullName,
     required int birthYear,
     required String date,
     required String diagnosis,
+    num? lsm,
+    num? cap,
   }) async {
     final ref = await _col.add(<String, dynamic>{
       if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
@@ -96,37 +100,136 @@ class FibroscanRepository {
       'birth_year': birthYear,
       'date': date,
       'diagnosis': diagnosis,
+      'lsm': ?lsm,
+      'cap': ?cap,
       'created_by': FirebaseAuth.instance.currentUser?.uid,
       'created_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'fibroscan',
+      entity: 'fibroscan_record',
+      entityId: ref.id,
+      action: 'create',
+      summary: _summary(fullName, date, diagnosis, lsm, cap),
+      changes: _changes(
+        patientId: patientId,
+        fullName: fullName,
+        birthYear: birthYear,
+        date: date,
+        diagnosis: diagnosis,
+        lsm: lsm,
+        cap: cap,
+      ),
+    );
     final doc = await ref.get();
     return FibroscanRecord.fromJson({...?doc.data(), 'id': doc.id});
   }
 
-  /// Правит запись (ошибочные ФИО / год / дата / диагноз). Передаются только
-  /// изменяемые поля; [date] — ISO `YYYY-MM-DD`. Штампует `updated_by` +
-  /// `updated_at`.
+  /// Правит запись (ошибочные ФИО / год / дата / диагноз / LSM / CAP). Передаются
+  /// только изменяемые поля; [date] — ISO `YYYY-MM-DD`. Для [lsm]/[cap] `null`
+  /// означает «очистить поле» (экран всегда передаёт оба значения из формы, где
+  /// они предзаполнены при входе в правку). Штампует `updated_by` + `updated_at`
+  /// и пишет запись аудита.
   Future<FibroscanRecord> update(
     String id, {
     String? fullName,
     int? birthYear,
     String? date,
     String? diagnosis,
+    num? lsm,
+    num? cap,
   }) async {
     await _col.doc(id).update(<String, dynamic>{
       'full_name': ?fullName,
       'birth_year': ?birthYear,
       'date': ?date,
       'diagnosis': ?diagnosis,
+      'lsm': lsm ?? FieldValue.delete(),
+      'cap': cap ?? FieldValue.delete(),
       'updated_by': FirebaseAuth.instance.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'fibroscan',
+      entity: 'fibroscan_record',
+      entityId: id,
+      action: 'update',
+      summary: _summary(fullName, date, diagnosis, lsm, cap),
+      changes: _changes(
+        fullName: fullName,
+        birthYear: birthYear,
+        date: date,
+        diagnosis: diagnosis,
+        lsm: lsm,
+        cap: cap,
+      ),
+    );
     final doc = await _col.doc(id).get();
     return FibroscanRecord.fromJson({...?doc.data(), 'id': doc.id});
   }
 
-  /// Удаляет ошибочно созданную запись исследования.
-  Future<void> delete(String id) => _col.doc(id).delete();
+  /// Удаляет ошибочно созданную запись исследования. [summary] — человеко-
+  /// читаемое описание для журнала аудита.
+  Future<void> delete(String id, {String? summary}) async {
+    await _col.doc(id).delete();
+    await logAudit(
+      module: 'fibroscan',
+      entity: 'fibroscan_record',
+      entityId: id,
+      action: 'delete',
+      summary: summary ?? 'Удалена запись фиброскана',
+    );
+  }
+
+  /// Краткое описание записи для журнала аудита: «ФИО · ДД.ММ.ГГГГ · Диагноз
+  /// [· LSM кПа][· CAP дБ/м]». Пустые поля опускаются.
+  static String _summary(
+    String? fullName,
+    String? date,
+    String? diagnosis,
+    num? lsm,
+    num? cap,
+  ) {
+    final parts = <String>[
+      if (fullName != null && fullName.isNotEmpty) fullName,
+      if (date != null && date.isNotEmpty) _displayDate(date),
+      if (diagnosis != null && diagnosis.isNotEmpty) diagnosis,
+      if (lsm != null) 'LSM ${_num(lsm)} кПа',
+      if (cap != null) 'CAP ${_num(cap)} дБ/м',
+    ];
+    return parts.join(' · ');
+  }
+
+  /// Набор изменённых/записанных полей для журнала аудита (snake_case ключи,
+  /// как в документе). Опущенные (`null`) поля не попадают в журнал.
+  static Map<String, dynamic> _changes({
+    String? patientId,
+    String? fullName,
+    int? birthYear,
+    String? date,
+    String? diagnosis,
+    num? lsm,
+    num? cap,
+  }) => <String, dynamic>{
+    if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
+    'full_name': ?fullName,
+    'birth_year': ?birthYear,
+    'date': ?date,
+    'diagnosis': ?diagnosis,
+    'lsm': ?lsm,
+    'cap': ?cap,
+  };
+
+  /// Число без лишнего `.0` (для аудита/сводок): `8.0`→`8`, `8.2`→`8.2`.
+  static String _num(num v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+
+  /// ISO-дата (`YYYY-MM-DD…`) → `ДД.ММ.ГГГГ`; иначе строка как есть.
+  static String _displayDate(String raw) {
+    final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(raw);
+    if (m == null) return raw;
+    return '${m.group(3)}.${m.group(2)}.${m.group(1)}';
+  }
 
   /// Безопасный маппинг документов: битый документ пропускается, а не роняет
   /// весь список.

@@ -26,11 +26,7 @@ const Map<String, String> kPayStatusLabels = <String, String>{
 
 /// Строка чека: услуга, цена за единицу, количество.
 class PaymentItem {
-  const PaymentItem({
-    required this.service,
-    required this.price,
-    this.qty = 1,
-  });
+  const PaymentItem({required this.service, required this.price, this.qty = 1});
 
   final String service;
   final num price;

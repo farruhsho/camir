@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/utils/formatters.dart';
+import '../../audit/data/audit_repository.dart';
 import '../domain/payment.dart';
 
 final paymentsRepositoryProvider = Provider<PaymentsRepository>(
@@ -52,11 +54,10 @@ class PaymentsRepository {
   }) async {
     final total = items.fold<num>(0, (acc, i) => acc + i.subtotal);
     final uid = FirebaseAuth.instance.currentUser?.uid;
+    final name = patientName.trim().isEmpty ? 'Без карты' : patientName.trim();
     final ref = await _col.add(<String, dynamic>{
       if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
-      'patient_name': patientName.trim().isEmpty
-          ? 'Без карты'
-          : patientName.trim(),
+      'patient_name': name,
       if (mrn != null && mrn.isNotEmpty) 'mrn': mrn,
       if (visitId != null && visitId.isNotEmpty) 'visit_id': visitId,
       'items': items.map((i) => i.toMap()).toList(),
@@ -68,6 +69,15 @@ class PaymentsRepository {
       'created_by': uid,
       'created_at': FieldValue.serverTimestamp(),
     });
+    await logAudit(
+      module: 'payments',
+      entity: 'payment',
+      entityId: ref.id,
+      action: 'create',
+      summary:
+          'Проведён платёж: $name · ${formatMoney(total.toString())} · '
+          '${kPayMethodLabels[method] ?? method}',
+    );
     final doc = await ref.get();
     return Payment.fromMap({...?doc.data(), 'id': doc.id});
   }
@@ -87,9 +97,7 @@ class PaymentsRepository {
   /// Возвраты, оформленные СЕГОДНЯ (по полю `refund_day`). Single-field запрос
   /// (авто-индекс), сортировка на клиенте по времени возврата.
   Future<List<Payment>> refundsToday() async {
-    final snap = await _col
-        .where('refund_day', isEqualTo: todayIso())
-        .get();
+    final snap = await _col.where('refund_day', isEqualTo: todayIso()).get();
     final items = snap.docs
         .map((d) => Payment.fromMap({...d.data(), 'id': d.id}))
         .toList();
@@ -109,13 +117,24 @@ class PaymentsRepository {
   /// запись (учёт append-only). Двойной возврат отсекается правилами
   /// (update разрешён только из статуса `paid`).
   Future<void> refund(String id, {String? reason}) async {
+    final r = reason?.trim();
+    final hasReason = r != null && r.isNotEmpty;
     await _col.doc(id).update(<String, dynamic>{
       'status': kPayRefunded,
       'refunded_at': FieldValue.serverTimestamp(),
       'refunded_by': FirebaseAuth.instance.currentUser?.uid,
       'refund_day': todayIso(),
-      if (reason != null && reason.trim().isNotEmpty)
-        'refund_reason': reason.trim(),
+      if (hasReason) 'refund_reason': r,
     });
+    await logAudit(
+      module: 'payments',
+      entity: 'payment',
+      entityId: id,
+      action: 'refund',
+      summary: hasReason
+          ? 'Оформлен возврат платежа: $r'
+          : 'Оформлен возврат платежа',
+      changes: hasReason ? <String, dynamic>{'refund_reason': r} : null,
+    );
   }
 }

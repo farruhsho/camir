@@ -11,7 +11,9 @@ class WarehouseProduct {
     this.category,
     required this.unit,
     this.minStock,
+    this.archived = false,
     this.createdAt,
+    this.updatedAt,
   });
 
   final String id;
@@ -26,7 +28,15 @@ class WarehouseProduct {
   /// Порог «мало на складе». null — контроль минимума не ведётся.
   final num? minStock;
 
+  /// Мягкое удаление: архивные товары скрыты из каталога и остатков
+  /// ([WarehouseRepository.products]/[WarehouseRepository.listWithStock]),
+  /// но их карточка и история движений остаются в базе (жёсткого удаления нет).
+  final bool archived;
+
   final DateTime? createdAt;
+
+  /// Время последнего изменения карточки (правка/архивация). null — не менялась.
+  final DateTime? updatedAt;
 }
 
 /// Допустимые единицы измерения для выпадашки при добавлении товара.
