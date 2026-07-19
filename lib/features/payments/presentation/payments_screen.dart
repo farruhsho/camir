@@ -433,9 +433,10 @@ class _Report extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    num byMethod(String m) => payments
-        .where((p) => p.method == m)
-        .fold<num>(0, (s, p) => s + p.total);
+    // Разбивка по способам через methodBreakdown(): смешанный платёж отдаёт
+    // наличную часть в «Наличные», карточную — в «Карту» и т.д.
+    num byMethod(String m) =>
+        payments.fold<num>(0, (s, p) => s + (p.methodBreakdown()[m] ?? 0));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1039,32 +1040,131 @@ class _NewPaymentDialog extends ConsumerStatefulWidget {
 class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
   final _name = TextEditingController();
   final List<PaymentItem> _items = <PaymentItem>[];
-  String _method = kPayCash;
   final _note = TextEditingController();
   String? _patientId;
   String? _mrn;
   bool _saving = false;
 
+  // ── Инлайн-поиск карты по мере ввода ФИО ──────────────────────────────────
+  Timer? _searchDebounce;
+  List<Patient> _suggestions = const <Patient>[];
+  bool _searching = false;
+  bool _showSuggestions = false;
+
+  // ── Разбивка оплаты (наличные / карта / перевод) ──────────────────────────
+  final _cash = TextEditingController();
+  final _card = TextEditingController();
+  final _transfer = TextEditingController();
+  // Кассир правил суммы вручную — не переустанавливаем дефолт при смене итога.
+  bool _splitTouched = false;
+
   num get _total => _items.fold<num>(0, (s, i) => s + i.subtotal);
+
+  num _amt(TextEditingController c) =>
+      num.tryParse(c.text.trim().replaceAll(',', '.')) ?? 0;
+  num get _cashAmt => _amt(_cash);
+  num get _cardAmt => _amt(_card);
+  num get _transferAmt => _amt(_transfer);
+  num get _distributed => _cashAmt + _cardAmt + _transferAmt;
+
+  /// Ненулевые способы оплаты (ключи [kPayCash]/[kPayCard]/[kPayTransfer]).
+  Map<String, num> get _splitEntries => <String, num>{
+    if (_cashAmt > 0) kPayCash: _cashAmt,
+    if (_cardAmt > 0) kPayCard: _cardAmt,
+    if (_transferAmt > 0) kPayTransfer: _transferAmt,
+  };
+
+  /// Можно проводить: есть услуги и ненулевые способы точно покрывают итог.
+  bool get _balanced =>
+      _items.isNotEmpty &&
+      _total > 0 &&
+      _splitEntries.isNotEmpty &&
+      sameMoney(_distributed, _total);
+
+  /// Денежное значение для префилла поля (без лишних нулей дробной части).
+  String _moneyInput(num v) =>
+      v == v.truncateToDouble() ? v.toInt().toString() : v.toString();
+
+  @override
+  void initState() {
+    super.initState();
+    _syncDefaultSplit();
+  }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _name.dispose();
     _note.dispose();
+    _cash.dispose();
+    _card.dispose();
+    _transfer.dispose();
     super.dispose();
   }
 
+  // ── Пациент ────────────────────────────────────────────────────────────────
+
+  /// Правка ФИО в поле: отвязывает выбранную карту и запускает дебаунс-поиск.
+  void _onNameChanged(String v) {
+    if (_patientId != null) {
+      _patientId = null;
+      _mrn = null;
+    }
+    _showSuggestions = true;
+    setState(() {});
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 300),
+      () => _runSearch(v),
+    );
+  }
+
+  /// Ищет сохранённые карты по ФИО / № карты / телефону (до 8 совпадений).
+  Future<void> _runSearch(String q) async {
+    final needle = q.trim();
+    if (needle.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _suggestions = const <Patient>[];
+          _searching = false;
+        });
+      }
+      return;
+    }
+    setState(() => _searching = true);
+    try {
+      final page = await ref
+          .read(patientsRepositoryProvider)
+          .list(q: needle, limit: 8);
+      if (mounted) setState(() => _suggestions = page.items);
+    } catch (_) {
+      if (mounted) setState(() => _suggestions = const <Patient>[]);
+    } finally {
+      if (mounted) setState(() => _searching = false);
+    }
+  }
+
+  /// Привязывает выбранную карту: patientId + № карты + подставляет ФИО.
+  void _selectPatient(Patient p) {
+    _searchDebounce?.cancel();
+    setState(() {
+      _patientId = p.id;
+      _mrn = p.mrn;
+      _name.text = p.fullName;
+      _suggestions = const <Patient>[];
+      _showSuggestions = false;
+      _searching = false;
+    });
+  }
+
+  /// Резервный путь: полноэкранный диалог поиска карты.
   Future<void> _pickPatient() async {
     final patient = await showDialog<Patient>(
       context: context,
       builder: (_) => const _PatientPickerDialog(),
     );
     if (!mounted || patient == null) return;
-    setState(() {
-      _patientId = patient.id;
-      _mrn = patient.mrn;
-      _name.text = patient.fullName;
-    });
+    _selectPatient(patient);
   }
 
   void _clearPatient() => setState(() {
@@ -1072,15 +1172,18 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
     _mrn = null;
   });
 
+  // ── Услуги ──────────────────────────────────────────────────────────────────
+
   Future<void> _addFromCatalog() async {
     final chosen = await showDialog<ServiceItem>(
       context: context,
       builder: (_) => const _ServicePickerDialog(),
     );
     if (!mounted || chosen == null) return;
-    setState(
-      () => _items.add(PaymentItem(service: chosen.name, price: chosen.price)),
-    );
+    setState(() {
+      _items.add(PaymentItem(service: chosen.name, price: chosen.price));
+      _syncDefaultSplit();
+    });
   }
 
   Future<void> _addCustom() async {
@@ -1089,17 +1192,64 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
       builder: (_) => const _CustomLineDialog(),
     );
     if (!mounted || item == null) return;
-    setState(() => _items.add(item));
+    setState(() {
+      _items.add(item);
+      _syncDefaultSplit();
+    });
   }
 
   void _setQty(int index, int delta) {
     final it = _items[index];
     final q = (it.qty + delta).clamp(1, 999);
-    setState(() => _items[index] = it.copyWith(qty: q));
+    setState(() {
+      _items[index] = it.copyWith(qty: q);
+      _syncDefaultSplit();
+    });
+  }
+
+  void _removeItem(int i) => setState(() {
+    _items.removeAt(i);
+    _syncDefaultSplit();
+  });
+
+  // ── Разбивка оплаты ─────────────────────────────────────────────────────────
+
+  /// Пока кассир не трогал разбивку — держим наличные = итог (карта/перевод
+  /// пустые). Единый метод после любых изменений списка услуг.
+  void _syncDefaultSplit() {
+    if (_splitTouched) return;
+    _cash.text = _total > 0 ? _moneyInput(_total) : '';
+    _card.text = '';
+    _transfer.text = '';
+  }
+
+  /// Правка «Наличные»/«Перевод»: остаток от итога автоматически идёт на «Карту».
+  void _onCashOrTransferChanged(String _) {
+    _splitTouched = true;
+    final rest = _total - _cashAmt - _transferAmt;
+    // Программная установка .text не вызывает onChanged «Карты» — рекурсии нет.
+    _card.text = rest > 0 ? _moneyInput(rest) : '';
+    setState(() {});
+  }
+
+  /// Правка «Карты» вручную: уважаем ввод, только пересчёт индикаторов.
+  void _onCardChanged(String _) {
+    _splitTouched = true;
+    setState(() {});
   }
 
   Future<void> _save() async {
-    if (_items.isEmpty) return;
+    if (_items.isEmpty || !_balanced) return;
+    final entries = _splitEntries;
+    final String method;
+    final Map<String, num>? splits;
+    if (entries.length > 1) {
+      method = kPayMixed;
+      splits = entries;
+    } else {
+      method = entries.keys.first;
+      splits = null;
+    }
     setState(() => _saving = true);
     try {
       final payment = await ref
@@ -1109,7 +1259,8 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
             patientName: _name.text,
             mrn: _mrn,
             items: _items,
-            method: _method,
+            method: method,
+            splits: splits,
             note: _note.text,
           );
       if (mounted) Navigator.pop(context, payment);
@@ -1137,29 +1288,23 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Пациент (опционально).
+              // Пациент (опционально) — инлайн-поиск карты по мере ввода.
+              // Ручная правка ФИО отвязывает карту (иначе платёж ушёл бы с
+              // patient_id одной карты и именем другой).
               Row(
                 children: [
                   Expanded(
                     child: TextField(
                       controller: _name,
                       textCapitalization: TextCapitalization.words,
-                      // Ручная правка ФИО отвязывает карту — иначе платёж ушёл
-                      // бы с patient_id одной карты и именем другой.
-                      onChanged: (_) {
-                        if (_patientId != null) {
-                          setState(() {
-                            _patientId = null;
-                            _mrn = null;
-                          });
-                        }
-                      },
+                      onChanged: _onNameChanged,
                       decoration: InputDecoration(
-                        labelText: 'Пациент (ФИО)',
+                        labelText: 'Пациент (ФИО / № карты / телефон)',
                         isDense: true,
+                        prefixIcon: const Icon(Icons.person_search, size: 20),
                         helperText: _patientId != null
                             ? 'Карта № $_mrn'
-                            : 'Без карты — разовая оплата',
+                            : 'Начните вводить — найдём карту, либо без карты',
                         suffixIcon: _patientId != null
                             ? IconButton(
                                 tooltip: 'Отвязать карту',
@@ -1178,6 +1323,7 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
                   ),
                 ],
               ),
+              _buildSuggestions(),
               const SizedBox(height: 14),
               // Строки услуг.
               Row(
@@ -1232,23 +1378,45 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
-              DropdownButtonFormField<String>(
-                initialValue: _method,
-                isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'Способ оплаты',
-                  isDense: true,
+              const SizedBox(height: 16),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Оплата (сом)',
+                  style: TextStyle(fontWeight: FontWeight.w700),
                 ),
-                items: [
-                  for (final m in kPayMethods)
-                    DropdownMenuItem(
-                      value: m,
-                      child: Text(kPayMethodLabels[m]!),
-                    ),
-                ],
-                onChanged: (v) => setState(() => _method = v ?? kPayCash),
               ),
+              const SizedBox(height: 4),
+              const Text(
+                'Введите наличные — остаток от итога уйдёт на карту. '
+                'Можно смешивать способы.',
+                style: TextStyle(color: AppColors.sub, fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _amountField(
+                      _cash,
+                      'Наличные',
+                      _onCashOrTransferChanged,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(child: _amountField(_card, 'Карта', _onCardChanged)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _amountField(
+                      _transfer,
+                      'Перевод',
+                      _onCashOrTransferChanged,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              _distributionLine(),
               const SizedBox(height: 12),
               TextField(
                 controller: _note,
@@ -1267,7 +1435,7 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
           child: const Text('Отмена'),
         ),
         FilledButton(
-          onPressed: (_saving || _items.isEmpty) ? null : _save,
+          onPressed: (_saving || !_balanced) ? null : _save,
           child: _saving
               ? const SizedBox(
                   width: 18,
@@ -1324,10 +1492,138 @@ class _NewPaymentDialogState extends ConsumerState<_NewPaymentDialog> {
             visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.delete_outline, size: 20),
             color: AppColors.red,
-            onPressed: () => setState(() => _items.removeAt(i)),
+            onPressed: () => _removeItem(i),
           ),
         ],
       ),
+    );
+  }
+
+  /// Поле ввода суммы одного способа оплаты (KGS «сом»).
+  Widget _amountField(
+    TextEditingController c,
+    String label,
+    ValueChanged<String> onChanged,
+  ) {
+    return TextField(
+      controller: c,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: money(),
+      onChanged: onChanged,
+      decoration: InputDecoration(labelText: label, isDense: true),
+    );
+  }
+
+  /// Живая строка «Распределено: X / ИТОГО» + остаток/перебор красным.
+  Widget _distributionLine() {
+    final over = _distributed > _total;
+    final balanced = _balanced;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Распределено',
+                style: TextStyle(color: AppColors.sub),
+              ),
+            ),
+            Text(
+              '${_som(_distributed)} / ${_som(_total)}',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: balanced ? AppColors.green : AppColors.ink,
+              ),
+            ),
+          ],
+        ),
+        if (!sameMoney(_distributed, _total)) ...[
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              over ? 'Перебор!' : 'Остаток: ${_som(_total - _distributed)}',
+              style: const TextStyle(
+                color: AppColors.red,
+                fontWeight: FontWeight.w600,
+                fontSize: 12.5,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Панель совпадений под полем ФИО: карты из картотеки по мере ввода. Скрыта,
+  /// когда карта уже выбрана или строка поиска пуста.
+  Widget _buildSuggestions() {
+    if (_patientId != null || !_showSuggestions) return const SizedBox.shrink();
+    if (_name.text.trim().isEmpty) return const SizedBox.shrink();
+
+    final Widget body;
+    if (_searching && _suggestions.isEmpty) {
+      body = const Padding(
+        padding: EdgeInsets.all(12),
+        child: Center(
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    } else if (_suggestions.isEmpty) {
+      body = const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text(
+          'Карта не найдена — оплата без карты',
+          style: TextStyle(color: AppColors.sub, fontSize: 12.5),
+        ),
+      );
+    } else {
+      body = ConstrainedBox(
+        constraints: const BoxConstraints(maxHeight: 176),
+        child: ListView.separated(
+          shrinkWrap: true,
+          padding: EdgeInsets.zero,
+          itemCount: _suggestions.length,
+          separatorBuilder: (_, _) => const Divider(height: 1),
+          itemBuilder: (_, i) {
+            final p = _suggestions[i];
+            final birth = p.birthDisplay;
+            return ListTile(
+              dense: true,
+              leading: InitialsAvatar(p.initials, size: 32),
+              title: Text(
+                p.fullName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                '№ ${p.mrn}'
+                '${p.phone != null ? ' · ${p.phone}' : ''}'
+                '${birth.isNotEmpty ? ' · $birth' : ''}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () => _selectPatient(p),
+            );
+          },
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(AppColors.rField),
+        border: Border.all(color: AppColors.line),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: body,
     );
   }
 }

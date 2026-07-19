@@ -5,15 +5,26 @@ const String kPayCash = 'cash';
 const String kPayCard = 'card';
 const String kPayTransfer = 'transfer';
 
-/// Способ оплаты → русская подпись.
+/// Смешанная оплата: сумма разнесена по нескольким способам (см. [Payment.splits]).
+/// Это значение поля `method` пишется только для сплит-платежей; в одиночных
+/// пикерах способа ([kPayMethods]) оно не участвует.
+const String kPayMixed = 'mixed';
+
+/// Способ оплаты → русская подпись. Включает [kPayMixed] для смешанных платежей
+/// (одиночные пикеры перебирают [kPayMethods] и его не показывают).
 const Map<String, String> kPayMethodLabels = <String, String>{
   kPayCash: 'Наличные',
   kPayCard: 'Карта',
   kPayTransfer: 'Перевод',
+  kPayMixed: 'Смешанный',
 };
 
-/// Порядок способов для выпадашки.
+/// Порядок способов для выпадашки (одиночный выбор — без [kPayMixed]).
 const List<String> kPayMethods = <String>[kPayCash, kPayCard, kPayTransfer];
+
+/// Считает две денежные суммы равными с точностью до тыйына (страхует от
+/// накопленной погрешности `double` при сравнении «распределено == итог»).
+bool sameMoney(num a, num b) => (a - b).abs() < 0.005;
 
 /// Статусы платежа.
 const String kPayPaid = 'paid';
@@ -70,6 +81,7 @@ class Payment {
     required this.items,
     required this.total,
     required this.method,
+    this.splits,
     required this.status,
     this.note,
     required this.day,
@@ -92,6 +104,11 @@ class Payment {
   final List<PaymentItem> items;
   final num total;
   final String method;
+
+  /// Разбивка суммы по способам оплаты для смешанного платежа: ключи —
+  /// [kPayCash]/[kPayCard]/[kPayTransfer], значения — суммы (только ненулевые).
+  /// `null` или один элемент — обычный одиночный платёж (см. [methodBreakdown]).
+  final Map<String, num>? splits;
   final String status;
   final String? note;
 
@@ -104,8 +121,34 @@ class Payment {
   final String? refundReason;
 
   bool get isRefunded => status == kPayRefunded;
-  String get methodLabel => kPayMethodLabels[method] ?? method;
+
+  /// Подпись способа оплаты. Для смешанного платежа — компактная сводка вида
+  /// «Наличные+Карта» (в порядке [kPayMethods]); если разложить не удалось —
+  /// «Смешанный». Для одиночного — обычная подпись из [kPayMethodLabels].
+  String get methodLabel {
+    final s = splits;
+    if (s != null && s.length > 1) {
+      final parts = <String>[
+        for (final m in kPayMethods)
+          if (s.containsKey(m)) kPayMethodLabels[m] ?? m,
+      ];
+      return parts.length > 1
+          ? parts.join('+')
+          : (kPayMethodLabels[kPayMixed] ?? 'Смешанный');
+    }
+    return kPayMethodLabels[method] ?? method;
+  }
+
   String get statusLabel => kPayStatusLabels[status] ?? status;
+
+  /// Разбивка платежа по способам оплаты: [splits] (если задан и непустой),
+  /// иначе весь [total] на один [method]. Используется дневным отчётом кассы и
+  /// дашбордом, чтобы смешанный платёж корректно засчитался в каждый способ.
+  Map<String, num> methodBreakdown() {
+    final s = splits;
+    if (s != null && s.isNotEmpty) return s;
+    return <String, num>{method: total};
+  }
 
   /// Краткое перечисление услуг для строки списка.
   String get itemsSummary => items
@@ -124,6 +167,20 @@ class Payment {
       return (s == null || s.isEmpty) ? null : s;
     }
 
+    /// Разбор `splits` из Firestore: карта «способ → сумма», ненулевые записи.
+    /// Пустая/битая карта → `null` (обычный одиночный платёж).
+    Map<String, num>? readSplits(dynamic v) {
+      if (v is! Map) return null;
+      final out = <String, num>{};
+      v.forEach((k, val) {
+        final key = k?.toString();
+        if (key == null || key.isEmpty) return;
+        final n = val is num ? val : num.tryParse('$val');
+        if (n != null && n != 0) out[key] = n;
+      });
+      return out.isEmpty ? null : out;
+    }
+
     final rawItems = (map['items'] as List?) ?? const <dynamic>[];
     return Payment(
       id: map['id']?.toString() ?? '',
@@ -137,6 +194,7 @@ class Payment {
           .toList(),
       total: (map['total'] as num?) ?? 0,
       method: map['method']?.toString() ?? kPayCash,
+      splits: readSplits(map['splits']),
       status: map['status']?.toString() ?? kPayPaid,
       note: str(map['note']),
       day: map['day']?.toString() ?? '',

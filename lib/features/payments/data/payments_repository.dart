@@ -43,6 +43,14 @@ class PaymentsRepository {
 
   /// Проводит платёж. [items] не должен быть пустым (проверяет форма). `total`
   /// считается на сервере из строк — клиентское значение не принимаем.
+  ///
+  /// [splits] — необязательная разбивка суммы по способам оплаты (ключи
+  /// [kPayCash]/[kPayCard]/[kPayTransfer], нулевые записи игнорируются). Когда
+  /// заданы ≥2 ненулевых способа — сумма разбивки обязана совпасть с итогом
+  /// (иначе бросается понятная ошибка), платёж помечается [kPayMixed] и `splits`
+  /// сохраняется. Если [splits] пуст/`null` или сводится к одному способу —
+  /// поведение прежнее (одиночный [method] без `splits`), поэтому существующие
+  /// вызовы (регистратура и др.) не ломаются.
   Future<Payment> create({
     String? patientId,
     required String patientName,
@@ -50,11 +58,36 @@ class PaymentsRepository {
     String? visitId,
     required List<PaymentItem> items,
     required String method,
+    Map<String, num>? splits,
     String? note,
   }) async {
     final total = items.fold<num>(0, (acc, i) => acc + i.subtotal);
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final name = patientName.trim().isEmpty ? 'Без карты' : patientName.trim();
+
+    // Нормализуем разбивку: только ненулевые способы.
+    final nonZero = <String, num>{
+      if (splits != null)
+        for (final e in splits.entries)
+          if (e.value != 0) e.key: e.value,
+    };
+    var effectiveMethod = method;
+    Map<String, num>? storedSplits;
+    if (nonZero.length > 1) {
+      final sum = nonZero.values.fold<num>(0, (a, b) => a + b);
+      if (!sameMoney(sum, total)) {
+        throw PaymentException(
+          'Сумма по способам оплаты (${formatMoney(sum.toString())}) '
+          'не совпадает с итогом (${formatMoney(total.toString())}).',
+        );
+      }
+      effectiveMethod = kPayMixed;
+      storedSplits = nonZero;
+    } else if (nonZero.length == 1) {
+      // Свёлся к одному способу — сохраняем как обычный одиночный платёж.
+      effectiveMethod = nonZero.keys.first;
+    }
+
     final ref = await _col.add(<String, dynamic>{
       if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
       'patient_name': name,
@@ -62,7 +95,8 @@ class PaymentsRepository {
       if (visitId != null && visitId.isNotEmpty) 'visit_id': visitId,
       'items': items.map((i) => i.toMap()).toList(),
       'total': total,
-      'method': method,
+      'method': effectiveMethod,
+      'splits': ?storedSplits,
       'status': kPayPaid,
       if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
       'day': todayIso(),
@@ -76,7 +110,7 @@ class PaymentsRepository {
       action: 'create',
       summary:
           'Проведён платёж: $name · ${formatMoney(total.toString())} · '
-          '${kPayMethodLabels[method] ?? method}',
+          '${kPayMethodLabels[effectiveMethod] ?? effectiveMethod}',
     );
     final doc = await ref.get();
     return Payment.fromMap({...?doc.data(), 'id': doc.id});
@@ -137,4 +171,16 @@ class PaymentsRepository {
       changes: hasReason ? <String, dynamic>{'refund_reason': r} : null,
     );
   }
+}
+
+/// Ошибка проведения платежа с уже готовым для показа русским текстом
+/// (`toString()` возвращает сообщение как есть, поэтому [friendlyError] отдаёт
+/// его без технических префиксов).
+class PaymentException implements Exception {
+  const PaymentException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }

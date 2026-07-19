@@ -69,7 +69,11 @@ class DashboardRepository {
         if (isPaid) {
           revenueToday += p.total;
           paidCountToday++;
-          methodTotals[p.method] = (methodTotals[p.method] ?? 0) + p.total;
+          // Разбивка по способам: смешанный платёж засчитывается в каждый способ
+          // своей частью (наличные — в «Наличные», карта — в «Карту» и т.д.).
+          for (final e in p.methodBreakdown().entries) {
+            methodTotals[e.key] = (methodTotals[e.key] ?? 0) + e.value;
+          }
         }
       }
       if (isPaid && revByIso.containsKey(p.day)) {
@@ -185,7 +189,8 @@ class DashboardRepository {
       averageCheck: avgCheck,
       methodTotals: methodTotals,
       last7: [
-        for (final d in days) DayRevenue(date: d, revenue: revByIso[_iso(d)] ?? 0),
+        for (final d in days)
+          DayRevenue(date: d, revenue: revByIso[_iso(d)] ?? 0),
       ],
       newPatientsToday: newPatientsToday,
       totalPatients: totalPatients,
@@ -310,5 +315,6 @@ class DashboardData {
   final int inventoryExpiryCount;
 
   /// Есть ли складские алерты (для карточки «Склад»).
-  bool get hasInventoryAlerts => inventoryLowCount > 0 || inventoryExpiryCount > 0;
+  bool get hasInventoryAlerts =>
+      inventoryLowCount > 0 || inventoryExpiryCount > 0;
 }
