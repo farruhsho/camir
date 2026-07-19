@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../analyses/domain/analysis_record.dart' show kAnalysisTypes;
 import '../../audit/data/audit_repository.dart';
 import '../domain/analysis_type.dart';
@@ -43,7 +44,10 @@ class AnalysisTypesRepository {
   /// Список видов анализов (по названию). [activeOnly] отфильтровывает
   /// отключённые записи (фильтр на клиенте — не требует композитного индекса).
   Future<List<AnalysisType>> list({bool activeOnly = false}) async {
-    final snap = await _col.orderBy('name').get();
+    final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .orderBy('name')
+        .get();
     var items = _parseDocs(snap.docs);
     if (activeOnly) items = items.where((t) => t.active).toList();
     return items;
@@ -59,6 +63,7 @@ class AnalysisTypesRepository {
     num? refHigh,
   }) async {
     final ref = await _col.add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       ..._fields(
         name: name,
         resultType: resultType,
@@ -154,6 +159,7 @@ class AnalysisTypesRepository {
     final uid = _uid;
     for (final name in kAnalysisTypes) {
       batch.set(_col.doc(), <String, dynamic>{
+        'clinic_id': ClinicScope.current,
         'name': name,
         'result_type': kResultQuantitative,
         'options': const <String>[],

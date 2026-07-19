@@ -1,17 +1,43 @@
 {
   "indexes": [
     {
-      "collectionGroup": "visits",
+      "collectionGroup": "patients",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "day", "order": "ASCENDING" },
-        { "fieldPath": "queue_number", "order": "ASCENDING" }
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "patients",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "phone", "order": "ASCENDING" }
       ]
     },
     {
       "collectionGroup": "visits",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "day", "order": "ASCENDING" },
+        { "fieldPath": "queue_number", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "analyses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "analyses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
         { "fieldPath": "patient_id", "order": "ASCENDING" },
         { "fieldPath": "created_at", "order": "DESCENDING" }
       ]
@@ -20,7 +46,15 @@
       "collectionGroup": "analyses",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "patient_id", "order": "ASCENDING" },
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "full_name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fibroscan",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
         { "fieldPath": "created_at", "order": "DESCENDING" }
       ]
     },
@@ -28,7 +62,56 @@
       "collectionGroup": "fibroscan",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "patient_id", "order": "ASCENDING" },
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "patient_id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fibroscan",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "full_name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fibroscan",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "products",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "stock_movements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "stock_movements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "product_id", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "day", "order": "ASCENDING" },
         { "fieldPath": "created_at", "order": "DESCENDING" }
       ]
     },
@@ -36,8 +119,56 @@
       "collectionGroup": "payments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "day", "order": "ASCENDING" },
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "refund_day", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "services",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "product_categories",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cash_shifts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "day", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cash_withdrawals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "day", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "audit",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
         { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "analysis_types",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clinic_id", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
       ]
     }
   ],

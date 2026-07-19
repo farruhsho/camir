@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../domain/audit_entry.dart';
 
 final auditRepositoryProvider = Provider<AuditRepository>(
@@ -30,6 +31,7 @@ class AuditRepository {
   /// Последние [limit] записей журнала, свежие сверху (по `created_at`).
   Future<List<AuditEntry>> recent({int limit = 300}) async {
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .orderBy('created_at', descending: true)
         .limit(limit)
         .get();
@@ -61,6 +63,7 @@ Future<void> logAudit({
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final name = await _resolveName(db, uid);
     await db.collection('audit').add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       'module': module,
       'entity': entity,
       if (entityId != null && entityId.isNotEmpty) 'entity_id': entityId,

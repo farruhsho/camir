@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../../core/network/page.dart';
 import '../../../core/utils/input_formatters.dart';
 import '../../audit/data/audit_repository.dart';
@@ -15,7 +16,11 @@ final patientsRepositoryProvider = Provider<PatientsRepository>(
 /// клиент пишет/читает напрямую (по образцу `analyses_repository`). Записи
 /// отдаются свежими сверху (по `created_at`). Ключи документов — snake_case,
 /// как ждёт [Patient]. № карты (`mrn`) выдаётся последовательно из счётчика
-/// `counters/patients` в транзакции.
+/// `counters/{clinic_id}__patients` в транзакции (счётчик — свой на клинику).
+///
+/// Мульти-клиничность: каждая запись штампуется `clinic_id` активной сессии
+/// ([ClinicScope.current]), а все чтения фильтруются по нему — карты одной
+/// клиники не видны другой.
 class PatientsRepository {
   PatientsRepository(this._db);
 
@@ -38,6 +43,7 @@ class PatientsRepository {
     const kSearchScanCeiling = 2000;
     final fetchLimit = needle.isEmpty ? limit : kSearchScanCeiling;
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .orderBy('created_at', descending: true)
         .limit(fetchLimit)
         .get();
@@ -70,6 +76,7 @@ class PatientsRepository {
     final normalized = assembleUzPhone(extractUzPhoneLocal(phone));
     if (normalized == null) return null;
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('phone', isEqualTo: normalized)
         .limit(1)
         .get();
@@ -78,15 +85,26 @@ class PatientsRepository {
     return Patient.fromMap({...d.data(), 'id': d.id});
   }
 
-  /// Одна карта по id документа.
+  /// Одна карта по id документа. Изоляция по клинике: карта чужой клиники
+  /// (или отсутствующая) «не существует» для этой сессии — возвращается пустая
+  /// карта с одним лишь id (как и раньше при отсутствии документа), чтобы не
+  /// менять контракт вызова.
   Future<Patient> byId(String id) async {
     final doc = await _col.doc(id).get();
-    return Patient.fromMap({...?doc.data(), 'id': doc.id});
+    final data = doc.data();
+    if (data == null || data['clinic_id'] != ClinicScope.current) {
+      return Patient.fromMap({'id': doc.id});
+    }
+    return Patient.fromMap({...data, 'id': doc.id});
   }
 
-  /// Следующий № карты из счётчика `counters/patients` (атомарно, транзакцией).
+  /// Следующий № карты из счётчика `counters/{clinic_id}__patients` (атомарно,
+  /// транзакцией). Счётчик — свой на каждую клинику, поэтому нумерация карт не
+  /// пересекается между клиниками.
   Future<String> _nextMrn() async {
-    final counter = _db.collection('counters').doc('patients');
+    final counter = _db
+        .collection('counters')
+        .doc('${ClinicScope.current}__patients');
     final seq = await _db.runTransaction<int>((tx) async {
       final snap = await tx.get(counter);
       final current = (snap.data()?['seq'] as num?)?.toInt() ?? 0;
@@ -127,6 +145,7 @@ class PatientsRepository {
       if (_clean(disease) != null) 'disease': _clean(disease),
       if (_clean(referral) != null) 'referral': _clean(referral),
       if (_clean(consultation) != null) 'consultation': _clean(consultation),
+      'clinic_id': ClinicScope.current,
       'created_at': FieldValue.serverTimestamp(),
       'created_by': FirebaseAuth.instance.currentUser?.uid,
     });
@@ -171,6 +190,7 @@ class PatientsRepository {
       'disease': _clean(disease),
       'referral': _clean(referral),
       'consultation': _clean(consultation),
+      'clinic_id': ClinicScope.current,
       'updated_by': FirebaseAuth.instance.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });

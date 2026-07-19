@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../../core/utils/formatters.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/service_item.dart';
@@ -31,7 +32,10 @@ class ServicesRepository {
       _db.collection('services');
 
   Future<List<ServiceItem>> list({bool activeOnly = false}) async {
-    final snap = await _col.orderBy('name').get();
+    final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .orderBy('name')
+        .get();
     var items = snap.docs
         .map((d) => ServiceItem.fromMap({...d.data(), 'id': d.id}))
         .toList();
@@ -45,6 +49,7 @@ class ServicesRepository {
     String? category,
   }) async {
     final ref = await _col.add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       'name': name.trim(),
       'price': price,
       if (category != null && category.trim().isNotEmpty)

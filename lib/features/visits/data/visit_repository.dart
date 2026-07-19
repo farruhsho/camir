@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/visit.dart';
 
@@ -13,7 +14,11 @@ final visitRepositoryProvider = Provider<VisitRepository>(
 /// клиент пишет/читает напрямую (по образцу `patients_repository`). Ключи
 /// документов — snake_case, как ждёт [Visit]. Порядковый номер приёма
 /// (`queue_number`) выдаётся последовательно из посуточного счётчика
-/// `counters/queue-YYYY-MM-DD` в транзакции.
+/// `counters/{clinic_id}__queue-YYYY-MM-DD` в транзакции (счётчик — свой на
+/// клинику и на день).
+///
+/// Мульти-клиничность: каждый приём штампуется `clinic_id` активной сессии
+/// ([ClinicScope.current]); список за день дополнительно фильтруется по нему.
 class VisitRepository {
   VisitRepository(this._db);
 
@@ -31,7 +36,7 @@ class VisitRepository {
   }
 
   /// Создаёт приём в статусе `awaiting_payment`: атомарно выдаёт `queue_number`
-  /// из счётчика `counters/queue-{день}` и пишет документ с денормализованными
+  /// из счётчика `counters/{clinic_id}__queue-{день}` и пишет документ с денорм.
   /// полями пациента и выбранной услугой (`service_name`/`service_price`).
   /// Штампует `created_by`/`created_at`.
   Future<Visit> create({
@@ -50,7 +55,9 @@ class VisitRepository {
     final docRef = _col.doc();
     var queueNumber = 0;
     await _db.runTransaction((tx) async {
-      final counterRef = _db.collection('counters').doc('queue-$day');
+      final counterRef = _db
+          .collection('counters')
+          .doc('${ClinicScope.current}__queue-$day');
       final snap = await tx.get(counterRef);
       final current = (snap.data()?['seq'] as num?)?.toInt() ?? 0;
       final next = current + 1;
@@ -71,6 +78,7 @@ class VisitRepository {
         'queue_number': next,
         'day': day,
         if (_clean(note) != null) 'note': _clean(note),
+        'clinic_id': ClinicScope.current,
         'created_by': uid,
         'created_at': FieldValue.serverTimestamp(),
       });
@@ -93,6 +101,7 @@ class VisitRepository {
   Future<List<Visit>> listToday({Set<String>? statuses}) async {
     final day = todayIso();
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('day', isEqualTo: day)
         .orderBy('queue_number')
         .get();
@@ -112,6 +121,7 @@ class VisitRepository {
     await _col.doc(id).update(<String, dynamic>{
       'status': kVisitPaid,
       'paid_at': FieldValue.serverTimestamp(),
+      'clinic_id': ClinicScope.current,
       'updated_by': uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
@@ -132,6 +142,7 @@ class VisitRepository {
     await _col.doc(id).update(<String, dynamic>{
       'status': kVisitDone,
       'done_at': FieldValue.serverTimestamp(),
+      'clinic_id': ClinicScope.current,
       'updated_by': uid,
       'updated_at': FieldValue.serverTimestamp(),
     });

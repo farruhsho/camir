@@ -17,9 +17,20 @@ abstract class AuthUser with _$AuthUser {
     String? cabinet,
     @Default(<String>[]) List<String> permissions,
     @Default(<String>[]) List<String> roles,
+    // Мульти-клиничность: активная клиника сотрудника (`null` — не назначена) и
+    // признак платформенного администратора (управление клиниками).
+    String? clinicId,
+    @Default(false) bool isPlatformAdmin,
   }) = _AuthUser;
 
-  factory AuthUser.fromJson(Map<String, dynamic> json) => _$AuthUserFromJson(json);
+  factory AuthUser.fromJson(Map<String, dynamic> json) =>
+      _$AuthUserFromJson(json);
 
-  bool can(String permission) => isSuperuser || permissions.contains(permission);
+  /// Управление клиниками — ТОЛЬКО у платформенного администратора (право
+  /// `clinics.manage` выдаётся динамически лишь ему). Обычный супер-админ
+  /// клиники под общий флаг `isSuperuser` его НЕ получает — иначе пункт
+  /// «Клиники» был бы виден клиническому суперу как «мёртвый».
+  bool can(String permission) => permission == 'clinics.manage'
+      ? permissions.contains(permission)
+      : (isSuperuser || permissions.contains(permission));
 }

@@ -21,6 +21,8 @@ _AuthUser _$AuthUserFromJson(Map<String, dynamic> json) => _AuthUser(
   roles:
       (json['roles'] as List<dynamic>?)?.map((e) => e as String).toList() ??
       const <String>[],
+  clinicId: json['clinic_id'] as String?,
+  isPlatformAdmin: json['is_platform_admin'] as bool? ?? false,
 );
 
 Map<String, dynamic> _$AuthUserToJson(_AuthUser instance) => <String, dynamic>{
@@ -32,4 +34,6 @@ Map<String, dynamic> _$AuthUserToJson(_AuthUser instance) => <String, dynamic>{
   'cabinet': instance.cabinet,
   'permissions': instance.permissions,
   'roles': instance.roles,
+  'clinic_id': instance.clinicId,
+  'is_platform_admin': instance.isPlatformAdmin,
 };

@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/fibro_ref.dart';
 
@@ -36,7 +37,9 @@ class FibroscanRefsRepository {
   /// (их можно записать в базу кнопкой «Сбросить к стандартным» → [setDefaults]).
   /// Битый документ пропускается, а не роняет весь список.
   Future<List<FibroRef>> list() async {
-    final snap = await _col.get();
+    final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .get();
     if (snap.docs.isEmpty) {
       return List<FibroRef>.from(kDefaultFibroRefs);
     }
@@ -71,6 +74,7 @@ class FibroscanRefsRepository {
     };
 
     if (item.id.isEmpty) {
+      data['clinic_id'] = ClinicScope.current;
       data['note'] = (note == null || note.isEmpty) ? null : note;
       data['created_by'] = _uid;
       data['created_at'] = FieldValue.serverTimestamp();
@@ -116,13 +120,16 @@ class FibroscanRefsRepository {
   /// Сбрасывает коллекцию к стандартным порогам [kDefaultFibroRefs]:
   /// удаляет текущие документы и записывает набор по умолчанию (одной пачкой).
   Future<void> setDefaults() async {
-    final existing = await _col.get();
+    final existing = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .get();
     final batch = _db.batch();
     for (final d in existing.docs) {
       batch.delete(d.reference);
     }
     for (final r in kDefaultFibroRefs) {
       batch.set(_col.doc(), <String, dynamic>{
+        'clinic_id': ClinicScope.current,
         'kind': r.kind,
         'label': r.label,
         'min': r.min,

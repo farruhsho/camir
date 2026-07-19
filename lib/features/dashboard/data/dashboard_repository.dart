@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../inventory/data/warehouse_repository.dart';
 import '../../payments/domain/cash_shift.dart';
 import '../../payments/domain/payment.dart';
@@ -14,11 +15,15 @@ import '../../visits/domain/visit.dart';
 /// кроме переиспользования [WarehouseRepository.listWithStock] (тоже чтение) для
 /// подсчёта складских алертов.
 ///
-/// Запросы держатся в рамках single-field индексов: по строке `day`
-/// (ISO `YYYY-MM-DD` сортируется лексикографически) и по `created_at`
-/// (Timestamp) — оба авто-индексируются, композитные индексы не нужны. Разбор
-/// каждого документа обёрнут защитно: одна битая запись не роняет весь дашборд, а
-/// сбой второстепенной секции (визиты/касса/склад) деградирует до нулей, но не
+/// Мульти-клиничность: КАЖДЫЙ запрос фильтруется по клинике сессии
+/// (`clinic_id == ClinicScope.current`), поэтому дашборд видит только данные
+/// своей клиники (изоляцию дублируют правила Firestore). Фильтр по клинике
+/// комбинируется со строкой `day` (ISO `YYYY-MM-DD`, лексикографический порядок)
+/// или с `created_at` (Timestamp) — под эти пары заданы составные индексы
+/// `(clinic_id, day)` / `(clinic_id, created_at)` в firestore.indexes.json
+/// (агрегаты `count()` используют те же индексы). Разбор каждого документа
+/// обёрнут защитно: одна битая запись не роняет весь дашборд, а сбой
+/// второстепенной секции (визиты/касса/склад) деградирует до нулей, но не
 /// прячет основную выручку.
 class DashboardRepository {
   DashboardRepository(this._db, this._warehouse);
@@ -53,6 +58,7 @@ class DashboardRepository {
 
     final rangeSnap = await _db
         .collection('payments')
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('day', isGreaterThanOrEqualTo: startDayIso)
         .get();
     for (final doc in rangeSnap.docs) {
@@ -86,6 +92,7 @@ class DashboardRepository {
     try {
       final refSnap = await _db
           .collection('payments')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
           .where('refund_day', isEqualTo: todayIso)
           .get();
       for (final doc in refSnap.docs) {
@@ -100,6 +107,7 @@ class DashboardRepository {
     try {
       final shiftSnap = await _db
           .collection('cash_shifts')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
           .where('day', isEqualTo: todayIso)
           .get();
       for (final d in shiftSnap.docs) {
@@ -117,6 +125,7 @@ class DashboardRepository {
     try {
       final wSnap = await _db
           .collection('cash_withdrawals')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
           .where('day', isEqualTo: todayIso)
           .get();
       for (final d in wSnap.docs) {
@@ -132,6 +141,7 @@ class DashboardRepository {
     try {
       final vSnap = await _db
           .collection('visits')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
           .where('day', isEqualTo: todayIso)
           .get();
       for (final d in vSnap.docs) {
@@ -147,17 +157,24 @@ class DashboardRepository {
     final newPatientsToday = await _safeCount(
       _db
           .collection('patients')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
           .where('created_at', isGreaterThanOrEqualTo: startTs),
     );
-    final totalPatients = await _safeCount(_db.collection('patients'));
+    final totalPatients = await _safeCount(
+      _db
+          .collection('patients')
+          .where('clinic_id', isEqualTo: ClinicScope.current),
+    );
     final analysesToday = await _safeCount(
       _db
           .collection('analyses')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
           .where('created_at', isGreaterThanOrEqualTo: startTs),
     );
     final fibroscanToday = await _safeCount(
       _db
           .collection('fibroscan')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
           .where('created_at', isGreaterThanOrEqualTo: startTs),
     );
 

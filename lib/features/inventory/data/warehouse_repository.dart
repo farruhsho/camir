@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/stock_math.dart';
 import '../domain/warehouse_movement.dart';
@@ -39,7 +40,10 @@ class WarehouseRepository {
   /// потерять легаси-карточки без поля `archived` (у Firestore-фильтра по
   /// отсутствующему полю такие документы выпали бы).
   Future<List<WarehouseProduct>> products() async {
-    final snap = await _products.orderBy('name').get();
+    final snap = await _products
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .orderBy('name')
+        .get();
     return snap.docs.map(_product).where((p) => !p.archived).toList();
   }
 
@@ -55,6 +59,7 @@ class WarehouseRepository {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final expiryIso = _isoDateOrNull(expiry);
     final ref = await _products.add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       'name': name,
       if (category != null && category.isNotEmpty) 'category': category,
       'unit': unit,
@@ -155,6 +160,7 @@ class WarehouseRepository {
     int limit = 300,
   }) async {
     final snap = await _movements
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .orderBy('created_at', descending: true)
         .limit(limit)
         .get();
@@ -204,6 +210,7 @@ class WarehouseRepository {
       final next = nextStock(current: current, isIn: isIn, qty: qty);
 
       txn.set(movementRef, <String, dynamic>{
+        'clinic_id': ClinicScope.current,
         'product_id': productId,
         'kind': kind,
         'qty': qty,
@@ -288,6 +295,7 @@ class WarehouseRepository {
       );
 
       txn.set(reverseRef, <String, dynamic>{
+        'clinic_id': ClinicScope.current,
         'product_id': orig.productId,
         'kind': reverseKind,
         'qty': orig.qty,
@@ -338,7 +346,10 @@ class WarehouseRepository {
   /// до-считывается точечным запросом `where('product_id'==id)` (сам себя
   /// «вылечит» на первом же движении). Порядок — как у [products] (по названию).
   Future<List<ProductStock>> listWithStock() async {
-    final productsSnap = await _products.orderBy('name').get();
+    final productsSnap = await _products
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .orderBy('name')
+        .get();
 
     final result = <ProductStock>[];
     for (final doc in productsSnap.docs) {
@@ -356,6 +367,7 @@ class WarehouseRepository {
   /// «seed» остатка для старых товаров без поля `stock`.
   Future<num> _scopedBalance(String productId) async {
     final snap = await _movements
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('product_id', isEqualTo: productId)
         .get();
     num balance = 0;

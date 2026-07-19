@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../../core/utils/formatters.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/payment.dart';
@@ -89,6 +90,7 @@ class PaymentsRepository {
     }
 
     final ref = await _col.add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
       'patient_name': name,
       if (mrn != null && mrn.isNotEmpty) 'mrn': mrn,
@@ -120,6 +122,7 @@ class PaymentsRepository {
   /// (day ASC, created_at DESC) — см. firestore.indexes.json.
   Future<List<Payment>> listToday() async {
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('day', isEqualTo: todayIso())
         .orderBy('created_at', descending: true)
         .get();
@@ -131,7 +134,10 @@ class PaymentsRepository {
   /// Возвраты, оформленные СЕГОДНЯ (по полю `refund_day`). Single-field запрос
   /// (авто-индекс), сортировка на клиенте по времени возврата.
   Future<List<Payment>> refundsToday() async {
-    final snap = await _col.where('refund_day', isEqualTo: todayIso()).get();
+    final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .where('refund_day', isEqualTo: todayIso())
+        .get();
     final items = snap.docs
         .map((d) => Payment.fromMap({...d.data(), 'id': d.id}))
         .toList();

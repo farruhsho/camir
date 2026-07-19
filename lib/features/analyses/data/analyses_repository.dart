@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/analysis_record.dart';
 
@@ -32,6 +33,7 @@ class AnalysesRepository {
   /// (фильтруется на клиенте, т.к. Firestore не умеет подстроку).
   Future<List<AnalysisRecord>> list({String? q, int limit = 200}) async {
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .orderBy('created_at', descending: true)
         .limit(limit)
         .get();
@@ -64,6 +66,7 @@ class AnalysesRepository {
     String? fullName,
   }) async {
     final byIdSnap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('patient_id', isEqualTo: patientId)
         .orderBy('created_at', descending: true)
         .get();
@@ -73,7 +76,10 @@ class AnalysesRepository {
     final name = fullName?.trim();
     var mergedUnlinked = false;
     if (name != null && name.isNotEmpty) {
-      final byNameSnap = await _col.where('full_name', isEqualTo: name).get();
+      final byNameSnap = await _col
+          .where('clinic_id', isEqualTo: ClinicScope.current)
+          .where('full_name', isEqualTo: name)
+          .get();
       for (final d in byNameSnap.docs) {
         if (seen.contains(d.id)) continue;
         final r = _tryParse(d);
@@ -108,6 +114,9 @@ class AnalysesRepository {
     required String date,
   }) async {
     final ref = await _col.add(<String, dynamic>{
+      // Мульти-клиничность: запись принадлежит клинике текущей сессии
+      // (штампуется только при создании; на update не перезаписывается).
+      'clinic_id': ClinicScope.current,
       if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
       'full_name': fullName,
       'birth_year': birthYear,

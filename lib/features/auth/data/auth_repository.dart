@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../../core/auth/role_catalog.dart';
 import '../domain/auth_user.dart';
 
@@ -67,6 +68,10 @@ class AuthRepository {
         'role': '',
         'permissions': <String>[],
         'is_superuser': false,
+        // Самостоятельная регистрация не даёт клиники: без неё нет доступа к
+        // данным, пока клинику не назначит администратор. Платформенный флаг
+        // не пишем вовсе (по умолчанию false).
+        'clinic_id': '',
         'created_at': FieldValue.serverTimestamp(),
         'created_by': uid,
       });
@@ -137,12 +142,19 @@ class AuthRepository {
           // вход работает только под dev-правилами (firestore.rules.dev).
           'permissions': permissionsForRole(role),
           'is_superuser': isSuperRole(role),
+          // Отладочный вход всегда попадает в клинику по умолчанию — в неё же
+          // мигрированы существующие данные.
+          'clinic_id': kDefaultClinicId,
           'created_at': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       } catch (_) {
         // Профиль не записался (напр. правила Firestore ещё закрыты) — для
         // быстрого входа роль берём из клиентского каталога, вход не блокируем.
       }
+      // Активная клиника сессии — по умолчанию (даже если запись профиля выше
+      // не прошла под закрытыми правилами, отладочный вход работает с ней).
+      ClinicScope.current = kDefaultClinicId;
+      ClinicScope.isPlatformAdmin = false;
       return AuthUser(
         id: uid,
         email: email,
@@ -150,6 +162,7 @@ class AuthRepository {
         roles: <String>[role],
         permissions: permissionsForRole(role),
         isSuperuser: isSuperRole(role),
+        clinicId: kDefaultClinicId,
       );
     } on FirebaseAuthException catch (e) {
       throw _mapAuthError(e);
@@ -164,7 +177,10 @@ class AuthRepository {
     return _userFromUid(u.uid, u.email);
   }
 
-  Future<void> logout() => _auth.signOut();
+  Future<void> logout() async {
+    ClinicScope.clear();
+    await _auth.signOut();
+  }
 
   /// Собирает [AuthUser] из документа staff/{uid}. Понятная ошибка, если
   /// профиль/роль не заведены. Супер-флаг берётся ИСКЛЮЧИТЕЛЬНО из серверного
@@ -188,18 +204,42 @@ class AuthRepository {
     }
     final role = (data['role'] as String?)?.trim() ?? '';
     final isSuper = data['is_superuser'] == true;
-    if (role.isEmpty && !isSuper) {
+    final isPlatformAdmin = data['is_platform_admin'] == true;
+    final clinicId = (data['clinic_id'] as String?)?.trim() ?? '';
+    // Мульти-клиничность: без назначенной клиники нет доступа к данным. Супер и
+    // платформенный админ входят и без клиники (bootstrap / управление
+    // клиниками); их операционные запросы всё равно ограничены ClinicScope.
+    if (clinicId.isEmpty && !isSuper && !isPlatformAdmin) {
+      throw const AuthException(
+        'Сотруднику не назначена клиника. Обратитесь к администратору.',
+      );
+    }
+    // Роль обязательна для обычных сотрудников. Супер и платформенный админ
+    // входят и без роли (bootstrap первого админа / управление клиниками).
+    if (role.isEmpty && !isSuper && !isPlatformAdmin) {
       throw const AuthException(
         'Сотруднику не назначена роль. Обратитесь к администратору.',
       );
     }
+    // Платформенному админу динамически выдаём право на управление клиниками —
+    // в каталоге ролей оно НЕ прописано (см. role_catalog.dart).
+    final basePerms = permissionsForRole(role);
+    final permissions = isPlatformAdmin && !basePerms.contains('clinics.manage')
+        ? <String>[...basePerms, 'clinics.manage']
+        : basePerms;
+    // Проставляем активную клинику сессии ПЕРЕД возвратом: репозитории берут её
+    // из ClinicScope для фильтрации/штампа clinic_id.
+    ClinicScope.current = clinicId.isEmpty ? null : clinicId;
+    ClinicScope.isPlatformAdmin = isPlatformAdmin;
     return AuthUser(
       id: uid,
       email: (data['email'] as String?) ?? email ?? '',
       fullName: (data['full_name'] as String?) ?? '',
       roles: role.isEmpty ? const <String>[] : <String>[role],
-      permissions: permissionsForRole(role),
+      permissions: permissions,
       isSuperuser: isSuper,
+      clinicId: clinicId.isEmpty ? null : clinicId,
+      isPlatformAdmin: isPlatformAdmin,
     );
   }
 

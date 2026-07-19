@@ -9,6 +9,7 @@ import '../features/audit/presentation/audit_log_screen.dart';
 import '../features/auth/application/auth_controller.dart';
 import '../features/auth/domain/auth_user.dart';
 import '../features/auth/presentation/login_screen.dart';
+import '../features/clinics/presentation/clinics_screen.dart';
 import '../features/dashboard/presentation/dashboard_screen.dart';
 import '../features/fibroscan/presentation/fibroscan_screen.dart';
 import '../features/fibroscan_refs/presentation/fibroscan_refs_screen.dart';
@@ -56,6 +57,9 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           // Управление персоналом — только супер-админ (гейт staff.manage).
           GoRoute(path: '/staff', builder: (_, _) => const StaffScreen()),
+          // Реестр клиник — только платформенный админ (гейт clinics.manage +
+          // жёсткая проверка isPlatformAdmin на самом экране).
+          GoRoute(path: '/clinics', builder: (_, _) => const ClinicsScreen()),
           // Журнал аудита (audit.read) и справочники (catalog.manage) —
           // Phase-1 экраны. Гейтинг через kAppDestinations + redirect.
           GoRoute(path: '/audit', builder: (_, _) => const AuditLogScreen()),

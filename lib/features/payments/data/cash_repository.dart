@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../../core/utils/formatters.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/cash_shift.dart';
@@ -43,6 +44,7 @@ class CashRepository {
   /// единицы, обычно одна).
   Future<CashShift?> currentShift() async {
     final snap = await _shifts
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('day', isEqualTo: PaymentsRepository.todayIso())
         .get();
     for (final d in snap.docs) {
@@ -62,6 +64,7 @@ class CashRepository {
     }
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final ref = await _shifts.add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       'day': PaymentsRepository.todayIso(),
       'opening_amount': openingAmount,
       'status': kShiftOpen,
@@ -108,6 +111,7 @@ class CashRepository {
   /// запрос (авто-индекс), сортировка на клиенте по времени создания.
   Future<List<CashWithdrawal>> withdrawalsToday() async {
     final snap = await _withdrawals
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('day', isEqualTo: PaymentsRepository.todayIso())
         .get();
     final items = snap.docs
@@ -130,6 +134,7 @@ class CashRepository {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     final r = reason.trim();
     final ref = await _withdrawals.add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       'amount': amount,
       if (r.isNotEmpty) 'reason': r,
       'day': PaymentsRepository.todayIso(),

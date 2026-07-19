@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/stock_math.dart';
 
@@ -46,7 +47,9 @@ class CategoriesRepository {
   /// дубликатов. Пустой справочник → стандартный набор [kDefaultProductCategories]
   /// (его можно зафиксировать в базе через [seedDefaults]).
   Future<List<String>> list() async {
-    final snap = await _col.get();
+    final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .get();
     if (snap.docs.isEmpty) return _sortedDefaults();
 
     final seen = <String>{};
@@ -75,7 +78,9 @@ class CategoriesRepository {
 
     // Первое добавление в пустой справочник — заодно фиксируем стандартный набор,
     // чтобы значения по умолчанию не «исчезли» из выпадающего списка.
-    final snap = await _col.get();
+    final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .get();
     if (snap.docs.isEmpty) {
       await seedDefaults();
     }
@@ -87,6 +92,7 @@ class CategoriesRepository {
     }
 
     final ref = await _col.add(<String, dynamic>{
+      'clinic_id': ClinicScope.current,
       'name': trimmed,
       'created_by': _uid,
       'created_at': FieldValue.serverTimestamp(),
@@ -105,7 +111,9 @@ class CategoriesRepository {
   /// только те значения, которых там ещё нет (регистронезависимо), одной пачкой.
   /// Идемпотентна: повторный вызов ничего не дублирует. Пишет аудит.
   Future<void> seedDefaults() async {
-    final snap = await _col.get();
+    final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .get();
     final existing = snap.docs
         .map((d) => (d.data()['name'] as String? ?? '').trim().toLowerCase())
         .toSet();
@@ -117,6 +125,7 @@ class CategoriesRepository {
     final batch = _db.batch();
     for (final name in missing) {
       batch.set(_col.doc(), <String, dynamic>{
+        'clinic_id': ClinicScope.current,
         'name': name,
         'created_by': _uid,
         'created_at': FieldValue.serverTimestamp(),

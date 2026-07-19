@@ -2,10 +2,20 @@ rules_version = '2';
 
 // ПРОДАКШЕН-ПРАВИЛА «Цадмир» (проект cadmir-erp, europe-west1).
 //
-// Модель безопасности: deny-by-default + ролевой доступ. Роль и права
-// сотрудника хранятся в staff/{uid} (поля is_superuser, permissions[], role)
-// и пишутся сервером/консолью — клиент НЕ может выдать их себе (см. staff ниже).
-// Коды прав совпадают с lib/core/auth/role_catalog.dart и firestore.rules.
+// Модель безопасности: deny-by-default + ролевой доступ + ИЗОЛЯЦИЯ КЛИНИК.
+// Роль и права сотрудника хранятся в staff/{uid} (поля is_superuser,
+// permissions[], role, clinic_id, is_platform_admin) и пишутся сервером/консолью
+// — клиент НЕ может выдать их себе (см. staff ниже). Коды прав совпадают с
+// lib/core/auth/role_catalog.dart.
+//
+// Мульти-клиничность: каждый бизнес-документ несёт поле `clinic_id` (String).
+// Сотрудник видит и меняет ТОЛЬКО документы своей клиники
+// (resource.data.clinic_id == staff/{uid}.clinic_id), и не может ни создать, ни
+// «увести» документ в чужую клинику. Платформенный администратор
+// (is_platform_admin) управляет коллекцией clinics и заводит клиникам первого
+// супер-админа; его доступ к операционным данным всё равно ограничен его
+// собственной клиникой. Изоляцию дублирует клиент (ClinicScope), но граница
+// безопасности — здесь.
 //
 // Локальная разработка: используйте firestore.rules.dev (открытые правила),
 // прод деплоится строго с этого файла (см. firebase.json).
@@ -41,62 +51,95 @@ service cloud.firestore {
       );
     }
 
+    // ---- мульти-клиничность ----
+    // Клиника текущего сотрудника. Вызывается только после isActive()/hasPerm()
+    // (короткое замыкание &&), поэтому staff/{uid} гарантированно существует.
+    function myClinic() {
+      return staffData().clinic_id;
+    }
+    // Платформенный администратор (управляет клиниками, заводит им админов).
+    function isPlatform() {
+      return isActive() && staffData().is_platform_admin == true;
+    }
+    // Существующий документ принадлежит клинике сотрудника (read/update/delete).
+    function sameClinic() {
+      return resource.data.clinic_id == myClinic();
+    }
+    // Записываемый документ адресован клинике сотрудника (create/update) —
+    // отсекает создание чужих и «увод» в другую клинику.
+    function createSameClinic() {
+      return request.resource.data.clinic_id == myClinic();
+    }
+
     // ---- пациенты ----
     match /patients/{id} {
-      allow read: if hasPerm('patients.read');
-      allow create: if hasPerm('patients.create');
-      allow update: if hasPerm('patients.update');
-      allow delete: if isSuper();
+      allow read: if hasPerm('patients.read') && sameClinic();
+      allow create: if hasPerm('patients.create') && createSameClinic();
+      allow update: if hasPerm('patients.update')
+        && sameClinic() && createSameClinic();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- визиты (регистратура/очередь) ----
     match /visits/{id} {
-      allow read: if hasPerm('visits.read');
-      allow create: if hasPerm('visits.create');
-      allow update: if hasPerm('visits.update');
-      allow delete: if isSuper();
+      allow read: if hasPerm('visits.read') && sameClinic();
+      allow create: if hasPerm('visits.create') && createSameClinic();
+      allow update: if hasPerm('visits.update')
+        && sameClinic() && createSameClinic();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- анализы ----
     match /analyses/{id} {
-      allow read: if hasPerm('analyses.read');
-      allow create, update: if hasPerm('analyses.write');
+      allow read: if hasPerm('analyses.read') && sameClinic();
+      allow create: if hasPerm('analyses.write') && createSameClinic();
+      allow update: if hasPerm('analyses.write')
+        && sameClinic() && createSameClinic();
       // Кто может править журнал — может и удалить ошибочную запись (UI и
       // правила согласованы; правка уже позволяет менять любое поле).
-      allow delete: if hasPerm('analyses.write');
+      allow delete: if hasPerm('analyses.write') && sameClinic();
     }
 
     // ---- фиброскан ----
     match /fibroscan/{id} {
-      allow read: if hasPerm('fibroscan.read');
-      allow create, update: if hasPerm('fibroscan.write');
-      allow delete: if hasPerm('fibroscan.write');
+      allow read: if hasPerm('fibroscan.read') && sameClinic();
+      allow create: if hasPerm('fibroscan.write') && createSameClinic();
+      allow update: if hasPerm('fibroscan.write')
+        && sameClinic() && createSameClinic();
+      allow delete: if hasPerm('fibroscan.write') && sameClinic();
     }
 
     // ---- склад: номенклатура ----
     match /products/{id} {
-      allow read: if hasPerm('inventory.read');
-      allow create, update: if hasPerm('inventory.manage');
-      allow delete: if isSuper();
+      allow read: if hasPerm('inventory.read') && sameClinic();
+      allow create: if hasPerm('inventory.manage') && createSameClinic();
+      allow update: if hasPerm('inventory.manage')
+        && sameClinic() && createSameClinic();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- склад: движения (приход/списание) ----
     match /stock_movements/{id} {
-      allow read: if hasPerm('inventory.read');
-      allow create: if hasPerm('inventory.write_off') || hasPerm('inventory.manage');
-      allow update, delete: if isSuper();
+      allow read: if hasPerm('inventory.read') && sameClinic();
+      allow create: if (hasPerm('inventory.write_off')
+          || hasPerm('inventory.manage'))
+        && createSameClinic();
+      allow update: if isSuper() && sameClinic() && createSameClinic();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- касса: платежи (append-only; возврат = единственная правка) ----
     match /payments/{id} {
-      allow read: if hasPerm('payments.read');
+      allow read: if hasPerm('payments.read') && sameClinic();
       // Создаёт кассир; фиксируем автора и стартовый статус.
       allow create: if hasPerm('payments.create')
         && request.resource.data.status == 'paid'
-        && request.resource.data.created_by == request.auth.uid;
+        && request.resource.data.created_by == request.auth.uid
+        && createSameClinic();
       // Единственная разрешённая правка — возврат: paid -> refunded, при этом
       // сумма/состав/день/способ/имя пациента НЕ меняются. Это же отсекает
-      // двойной возврат (из refunded перейти нельзя).
+      // двойной возврат (из refunded перейти нельзя). Клиника обязана совпадать
+      // до и после (sameClinic + createSameClinic).
       allow update: if hasPerm('payments.refund')
         && resource.data.status == 'paid'
         && request.resource.data.status == 'refunded'
@@ -109,24 +152,30 @@ service cloud.firestore {
         && request.resource.data.created_at == resource.data.created_at
         && request.resource.data.get('patient_id', '')
              == resource.data.get('patient_id', '')
-        && request.resource.data.get('mrn', '') == resource.data.get('mrn', '');
-      allow delete: if isSuper();
+        && request.resource.data.get('mrn', '') == resource.data.get('mrn', '')
+        && sameClinic()
+        && createSameClinic();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- касса: прайс-лист услуг (кассир читает, чтобы собрать чек) ----
     match /services/{id} {
-      allow read: if hasPerm('services.read') || hasPerm('payments.create');
-      allow create, update: if hasPerm('services.manage');
-      allow delete: if isSuper();
+      allow read: if (hasPerm('services.read') || hasPerm('payments.create'))
+        && sameClinic();
+      allow create: if hasPerm('services.manage') && createSameClinic();
+      allow update: if hasPerm('services.manage')
+        && sameClinic() && createSameClinic();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- касса: смены (открытие/закрытие; учёт append-only) ----
     match /cash_shifts/{id} {
-      allow read: if hasPerm('payments.read');
+      allow read: if hasPerm('payments.read') && sameClinic();
       // Открывает кассир; фиксируем автора и стартовый статус `open`.
       allow create: if hasPerm('payments.create')
         && request.resource.data.status == 'open'
-        && request.resource.data.opened_by == request.auth.uid;
+        && request.resource.data.opened_by == request.auth.uid
+        && createSameClinic();
       // Единственная правка — закрытие смены: open -> closed, при этом
       // начальный остаток/день/автор открытия НЕ меняются (реконсиляция
       // должна сходиться; повторное закрытие отсекается — из closed нельзя).
@@ -135,79 +184,114 @@ service cloud.firestore {
         && request.resource.data.status == 'closed'
         && request.resource.data.opening_amount == resource.data.opening_amount
         && request.resource.data.day == resource.data.day
-        && request.resource.data.opened_by == resource.data.opened_by;
-      allow delete: if isSuper();
+        && request.resource.data.opened_by == resource.data.opened_by
+        && sameClinic()
+        && createSameClinic();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- касса: изъятия наличных (append-only, только создание) ----
     match /cash_withdrawals/{id} {
-      allow read: if hasPerm('payments.read');
+      allow read: if hasPerm('payments.read') && sameClinic();
       // Оформляет кассир; фиксируем автора. Правка запрещена (append-only),
       // удалить ошибочную запись может только супер-админ.
       allow create: if hasPerm('payments.create')
-        && request.resource.data.created_by == request.auth.uid;
+        && request.resource.data.created_by == request.auth.uid
+        && createSameClinic();
       allow update: if false;
-      allow delete: if isSuper();
+      allow delete: if isSuper() && sameClinic();
     }
 
     // ---- счётчики (MRN / номер очереди) — нужны в транзакциях создания
     // карты пациента и визита. Доступ только тем, кто реально создаёт записи,
-    // чтобы «обезоруженный» новый аккаунт не мог накручивать счётчики. ----
+    // чтобы «обезоруженный» новый аккаунт не мог накручивать счётчики.
+    // Изоляция клиник обеспечена схемой id: counters/{clinic_id}__patients и
+    // counters/{clinic_id}__queue-<день> — у документа счётчика нет поля
+    // clinic_id, поэтому здесь оставляем ролевую проверку без sameClinic(). ----
     match /counters/{doc} {
       allow read, write: if hasPerm('patients.create') || hasPerm('visits.create');
     }
 
     // ---- сотрудники ----
-    // Читать свой профиль может сам сотрудник; чужие — только супер-админ.
-    // Самостоятельная регистрация разрешена ТОЛЬКО «обезоруженной»: uid == свой,
-    // is_superuser == false и без прав. Повышение/правку делает супер-админ
-    // (через консоль). Это закрывает самоэскалацию привилегий.
+    // Читать свой профиль может сам сотрудник; чужие — супер-админ СВОЕЙ клиники
+    // или платформенный админ. Самостоятельная регистрация разрешена ТОЛЬКО
+    // «обезоруженной»: uid == свой, is_superuser == false и без прав/роли —
+    // клинику назначает супер-админ позже (у нового профиля прав нет, поэтому
+    // до назначения он не видит данных). Повышение/правку делает супер-админ
+    // своей клиники или платформенный админ. Это закрывает самоэскалацию.
     match /staff/{uid} {
-      allow read: if request.auth.uid == uid || isSuper();
-      // Супер-админ заводит сотрудников из экрана «Сотрудники» (uid чужой).
-      // Самостоятельная регистрация — строго «обезоруженная»: свой uid,
-      // is_superuser=false, без прав И без роли (роль назначает супер-админ).
-      // Роль нельзя выставить себе — иначе клиент поднял бы себе доступ.
-      allow create: if isSuper()
+      allow read: if request.auth.uid == uid
+        || (isSuper() && sameClinic())
+        || isPlatform();
+      // Платформенный админ заводит первого супер-админа клинике; супер-админ
+      // заводит сотрудников В СВОЮ клинику (createSameClinic). Самостоятельная
+      // регистрация — строго «обезоруженная»: свой uid, is_superuser=false, без
+      // прав И без роли (роль/клинику назначает супер-админ). Роль нельзя
+      // выставить себе — иначе клиент поднял бы себе доступ.
+      allow create: if isPlatform()
+        || (isSuper() && createSameClinic())
         || (request.auth.uid == uid
             && request.resource.data.is_superuser == false
             && (!('permissions' in request.resource.data)
                 || request.resource.data.permissions.size() == 0)
             && (!('role' in request.resource.data)
                 || request.resource.data.role == ''));
-      allow update, delete: if isSuper();
+      allow update: if isPlatform() || (isSuper() && sameClinic());
+      allow delete: if isPlatform() || (isSuper() && sameClinic());
     }
 
     // ---- аудит (append-only) ----
-    // Создавать может только активный сотрудник и только от своего имени;
-    // редактировать/удалять нельзя (append-only журнал).
+    // Создавать может только активный сотрудник, от своего имени и в свою
+    // клинику; читать — держатель audit.read/супер-админ в рамках своей
+    // клиники; редактировать/удалять нельзя (append-only журнал).
     match /audit/{doc} {
       allow create: if isActive()
-        && request.resource.data.created_by == request.auth.uid;
-      allow read: if hasPerm('audit.read') || isSuper();
+        && request.resource.data.created_by == request.auth.uid
+        && createSameClinic();
+      allow read: if (hasPerm('audit.read') || isSuper()) && sameClinic();
       allow update, delete: if false;
     }
 
-    // ---- справочник типов анализов (каталог) ----
-    // Читать может любой активный сотрудник (нужно везде, где выбирают тип
-    // анализа); править — только держатель catalog.manage (супер-админ неявно).
+    // ---- справочник типов анализов (каталог, свой на клинику) ----
+    // Читать может любой активный сотрудник своей клиники (нужно везде, где
+    // выбирают тип анализа); править — держатель catalog.manage (супер-админ
+    // неявно), только в своей клинике.
     match /analysis_types/{id} {
-      allow read: if isActive();
-      allow create, update, delete: if hasPerm('catalog.manage');
+      allow read: if isActive() && sameClinic();
+      allow create: if hasPerm('catalog.manage') && createSameClinic();
+      allow update: if hasPerm('catalog.manage')
+        && sameClinic() && createSameClinic();
+      allow delete: if hasPerm('catalog.manage') && sameClinic();
     }
 
-    // ---- справочник референсов фиброскана (каталог) ----
+    // ---- справочник референсов фиброскана (каталог, свой на клинику) ----
     match /fibroscan_refs/{id} {
-      allow read: if isActive();
-      allow create, update, delete: if hasPerm('catalog.manage');
+      allow read: if isActive() && sameClinic();
+      allow create: if hasPerm('catalog.manage') && createSameClinic();
+      allow update: if hasPerm('catalog.manage')
+        && sameClinic() && createSameClinic();
+      allow delete: if hasPerm('catalog.manage') && sameClinic();
     }
 
-    // ---- склад: справочник категорий товаров (каталог) ----
-    // Читать может любой активный сотрудник (нужно при выборе категории товара);
-    // управлять — держатель inventory.manage (супер-админ неявно).
+    // ---- склад: справочник категорий товаров (каталог, свой на клинику) ----
+    // Читать может любой активный сотрудник своей клиники (нужно при выборе
+    // категории товара); управлять — держатель inventory.manage (супер-админ
+    // неявно), только в своей клинике.
     match /product_categories/{id} {
+      allow read: if isActive() && sameClinic();
+      allow create: if hasPerm('inventory.manage') && createSameClinic();
+      allow update: if hasPerm('inventory.manage')
+        && sameClinic() && createSameClinic();
+      allow delete: if hasPerm('inventory.manage') && sameClinic();
+    }
+
+    // ---- клиники (реестр тенантов) ----
+    // Читать реестр может любой активный сотрудник (напр. чтобы показать имя
+    // своей клиники); заводить/править/удалять клиники — только платформенный
+    // администратор.
+    match /clinics/{id} {
       allow read: if isActive();
-      allow create, update, delete: if hasPerm('inventory.manage');
+      allow create, update, delete: if isPlatform();
     }
 
     // ---- deny-by-default: всё остальное закрыто ----

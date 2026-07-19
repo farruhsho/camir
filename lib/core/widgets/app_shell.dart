@@ -134,6 +134,18 @@ const kAppDestinations = <AppDestination>[
     '/staff',
     permissions: ['staff.manage'],
   ),
+  // Клиники — только платформенный админ. Право clinics.manage AUTH выдаёт
+  // лишь платформенным админам, поэтому пункт скрыт от обычного клинического
+  // супер-админа. НЕ спец-casим isSuperuser здесь: видимость держится строго на
+  // permissions:["clinics.manage"], иначе клинический супер-админ увидел бы
+  // раздел (AuthUser.can(...) для супера истинно для любого права).
+  AppDestination(
+    Icons.apartment_outlined,
+    Icons.apartment,
+    'Клиники',
+    '/clinics',
+    permissions: ['clinics.manage'],
+  ),
 ];
 
 String _initialsOf(String name) {

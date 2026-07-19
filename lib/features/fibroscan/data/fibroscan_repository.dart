@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/clinic_scope.dart';
 import '../../audit/data/audit_repository.dart';
 import '../domain/fibroscan_record.dart';
 
@@ -28,6 +29,7 @@ class FibroscanRepository {
   /// документ (например, из старой схемы) не должен ронять весь список.
   Future<List<FibroscanRecord>> list({String? q, int limit = 200}) async {
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .orderBy('created_at', descending: true)
         .limit(limit)
         .get();
@@ -48,16 +50,18 @@ class FibroscanRepository {
 
   /// Исследования за период [fromIso, toIso] включительно (ISO `YYYY-MM-DD`)
   /// для журнального отчёта (задача экспорта журнала). Диапазон строится по
-  /// строковому полю `date` — ISO сортируется лексикографически, поэтому это
-  /// одиночный (авто-индексируемый) диапазонный запрос БЕЗ составного индекса
-  /// (range-фильтр и `orderBy` по одному и тому же полю). Порядок —
-  /// хронологический (старые сверху), как в бумажном журнале. Битый документ
-  /// пропускается, а не роняет весь список.
+  /// строковому полю `date` — ISO сортируется лексикографически. С фильтром
+  /// мульти-клиничности (`clinic_id ==`) запрос комбинирует равенство с
+  /// range/`orderBy` по `date`, поэтому требует СОСТАВНОЙ индекс
+  /// (`clinic_id` ASC + `date` ASC). Порядок — хронологический (старые сверху),
+  /// как в бумажном журнале. Битый документ пропускается, а не роняет весь
+  /// список.
   Future<List<FibroscanRecord>> listForPeriod(
     String fromIso,
     String toIso,
   ) async {
     final snap = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
         .where('date', isGreaterThanOrEqualTo: fromIso)
         .where('date', isLessThanOrEqualTo: toIso)
         .orderBy('date')
@@ -76,12 +80,18 @@ class FibroscanRepository {
     String patientId, {
     String? fullName,
   }) async {
-    final byId = await _col.where('patient_id', isEqualTo: patientId).get();
+    final byId = await _col
+        .where('clinic_id', isEqualTo: ClinicScope.current)
+        .where('patient_id', isEqualTo: patientId)
+        .get();
     final docs = <QueryDocumentSnapshot<Map<String, dynamic>>>[...byId.docs];
 
     final name = fullName?.trim();
     if (name != null && name.isNotEmpty) {
-      final byName = await _col.where('full_name', isEqualTo: name).get();
+      final byName = await _col
+          .where('clinic_id', isEqualTo: ClinicScope.current)
+          .where('full_name', isEqualTo: name)
+          .get();
       for (final d in byName.docs) {
         final pid = d.data()['patient_id'];
         final orphan = pid == null || (pid is String && pid.isEmpty);
@@ -118,6 +128,9 @@ class FibroscanRepository {
     int? validMeasurements,
   }) async {
     final ref = await _col.add(<String, dynamic>{
+      // Мульти-клиничность: запись принадлежит клинике текущей сессии
+      // (штампуется только при создании; на update не перезаписывается).
+      'clinic_id': ClinicScope.current,
       if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
       'full_name': fullName,
       'birth_year': birthYear,
