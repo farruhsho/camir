@@ -38,9 +38,9 @@ class DateInputFormatter extends TextInputFormatter {
 /// Только цифры, не более [maxDigits]. Используется для локальной части
 /// телефона (+996 уже в префиксе поля) и числовых документов (ПИН).
 List<TextInputFormatter> digitsOnly(int maxDigits) => [
-      FilteringTextInputFormatter.digitsOnly,
-      LengthLimitingTextInputFormatter(maxDigits),
-    ];
+  FilteringTextInputFormatter.digitsOnly,
+  LengthLimitingTextInputFormatter(maxDigits),
+];
 
 /// Локальная часть кыргызского номера: только цифры, максимум 9
 /// (`700 12 34 56`). Префикс `+996 ` показывается через `prefixText`, в
@@ -101,4 +101,94 @@ String extractUzPhoneLocal(String? raw) {
     digits = digits.substring(digits.length - kUzPhoneLocalLength);
   }
   return digits;
+}
+
+/// Символы, допустимые в ФИО: кириллица (вкл. кыргызские Ң/Ө/Ү — они попадают
+/// в диапазон `Ѐ-ӿ`), латиница, пробел, дефис и апостроф (прямой и
+/// типографские варианты для имён вида `O'zbek`). Цифры и прочие символы
+/// отсекаются на вводе.
+final List<TextInputFormatter> nameFormatters = [
+  FilteringTextInputFormatter.allow(RegExp(r"[A-Za-zЀ-ӿ \-'ʼ’]")),
+];
+
+/// Денежный ввод: только цифры и ОДИН разделитель дробной части (точка или
+/// запятая). Второй разделитель и любые другие символы игнорируются.
+/// Возвращает список форматтеров для `inputFormatters:`.
+List<TextInputFormatter> money() => const [_MoneyInputFormatter()];
+
+/// Форматтер денежной суммы: пропускает цифры и единственный разделитель
+/// (`.`/`,`); повторный разделитель и посторонние символы блокируются.
+class _MoneyInputFormatter extends TextInputFormatter {
+  const _MoneyInputFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final buffer = StringBuffer();
+    var hasSeparator = false;
+    for (var i = 0; i < newValue.text.length; i++) {
+      final ch = newValue.text[i];
+      if (RegExp(r'[0-9]').hasMatch(ch)) {
+        buffer.write(ch);
+      } else if ((ch == '.' || ch == ',') && !hasSeparator) {
+        hasSeparator = true;
+        buffer.write(ch);
+      }
+    }
+    final text = buffer.toString();
+    // Если фильтрация ничего не изменила — не двигаем курсор.
+    if (text == newValue.text) return newValue;
+    return TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+}
+
+/// Только целое число, не превышающее [max]. Пустой ввод и промежуточные
+/// значения `<= max` разрешены; ввод, дающий число `> max`, отклоняется
+/// (остаётся прежнее значение). Отрицательных нет — минус не проходит.
+List<TextInputFormatter> intOnly(int max) => [
+  FilteringTextInputFormatter.digitsOnly,
+  _MaxValueInputFormatter(max),
+];
+
+/// Ограничивает целочисленный ввод сверху значением [max].
+class _MaxValueInputFormatter extends TextInputFormatter {
+  const _MaxValueInputFormatter(this.max);
+
+  final int max;
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    if (newValue.text.isEmpty) return newValue;
+    final value = int.tryParse(newValue.text);
+    if (value == null || value > max) return oldValue;
+    return newValue;
+  }
+}
+
+/// Валидатор ФИО для `TextFormField`: поле обязательно и не должно содержать
+/// цифр. Возвращает текст ошибки или `null`, если значение корректно.
+String? validateName(String? value) {
+  final text = (value ?? '').trim();
+  if (text.isEmpty) return 'Заполните поле';
+  if (RegExp(r'[0-9]').hasMatch(text)) return 'Без цифр';
+  return null;
+}
+
+/// Валидатор положительного числа для `TextFormField`: поле обязательно,
+/// должно парситься как число (запятая = десятичный разделитель) и быть > 0.
+String? validatePositiveNum(String? value) {
+  final text = (value ?? '').trim().replaceAll(',', '.');
+  if (text.isEmpty) return 'Заполните поле';
+  final number = num.tryParse(text);
+  if (number == null) return 'Введите число';
+  if (number <= 0) return 'Должно быть больше нуля';
+  return null;
 }

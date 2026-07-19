@@ -158,6 +158,20 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // ---- справочник типов анализов (каталог) ----
+    // Читать может любой активный сотрудник (нужно везде, где выбирают тип
+    // анализа); править — только держатель catalog.manage (супер-админ неявно).
+    match /analysis_types/{id} {
+      allow read: if isActive();
+      allow create, update, delete: if hasPerm('catalog.manage');
+    }
+
+    // ---- справочник референсов фиброскана (каталог) ----
+    match /fibroscan_refs/{id} {
+      allow read: if isActive();
+      allow create, update, delete: if hasPerm('catalog.manage');
+    }
+
     // ---- deny-by-default: всё остальное закрыто ----
     match /{document=**} {
       allow read, write: if false;

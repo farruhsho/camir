@@ -98,6 +98,30 @@ const kAppDestinations = <AppDestination>[
     '/inventory',
     permissions: ['inventory.read'],
   ),
+  // Журнал аудита — история изменений (кто/что/когда). Право audit.read.
+  AppDestination(
+    Icons.history,
+    Icons.history,
+    'Журнал',
+    '/audit',
+    permissions: ['audit.read'],
+  ),
+  // Справочник анализов — каталог типов лабораторных исследований.
+  AppDestination(
+    Icons.science_outlined,
+    Icons.science,
+    'Справочник анализов',
+    '/analysis-types',
+    permissions: ['catalog.manage'],
+  ),
+  // Справочник фиброскана — референсные пороги стадий/степеней.
+  AppDestination(
+    Icons.tune,
+    Icons.tune,
+    'Справочник фиброскана',
+    '/fibroscan-refs',
+    permissions: ['catalog.manage'],
+  ),
   // Сотрудники — только супер-админ. Право staff.manage нет ни у одной обычной
   // роли (нет в role_catalog), поэтому пункт виден лишь тем, у кого isSuperuser
   // (AuthUser.can(...) для супера истинно всегда).
@@ -247,10 +271,7 @@ class _MobileScaffold extends ConsumerWidget {
                   : Icon(d.selectedIcon),
               label: d.label,
             ),
-          const NavigationDestination(
-            icon: Icon(Icons.logout),
-            label: 'Выход',
-          ),
+          const NavigationDestination(icon: Icon(Icons.logout), label: 'Выход'),
         ],
       ),
     );

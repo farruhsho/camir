@@ -4,10 +4,13 @@ import 'package:go_router/go_router.dart';
 
 import '../core/widgets/app_shell.dart';
 import '../features/analyses/presentation/analyses_screen.dart';
+import '../features/analysis_types/presentation/analysis_types_screen.dart';
+import '../features/audit/presentation/audit_log_screen.dart';
 import '../features/auth/application/auth_controller.dart';
 import '../features/auth/domain/auth_user.dart';
 import '../features/auth/presentation/login_screen.dart';
 import '../features/fibroscan/presentation/fibroscan_screen.dart';
+import '../features/fibroscan_refs/presentation/fibroscan_refs_screen.dart';
 import '../features/inventory/presentation/inventory_screen.dart';
 import '../features/patients/presentation/patients_screen.dart';
 import '../features/payments/presentation/payments_screen.dart';
@@ -50,6 +53,17 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           // Управление персоналом — только супер-админ (гейт staff.manage).
           GoRoute(path: '/staff', builder: (_, _) => const StaffScreen()),
+          // Журнал аудита (audit.read) и справочники (catalog.manage) —
+          // Phase-1 экраны. Гейтинг через kAppDestinations + redirect.
+          GoRoute(path: '/audit', builder: (_, _) => const AuditLogScreen()),
+          GoRoute(
+            path: '/analysis-types',
+            builder: (_, _) => const AnalysisTypesScreen(),
+          ),
+          GoRoute(
+            path: '/fibroscan-refs',
+            builder: (_, _) => const FibroscanRefsScreen(),
+          ),
         ],
       ),
     ],

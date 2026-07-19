@@ -149,18 +149,11 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
     }
   }
 
-  /// Год рождения из даты пациента (`YYYY-MM-DD`) — берём первые 4 цифры.
-  static String _yearOf(String? birthDate) {
-    if (birthDate == null) return '';
-    final m = RegExp(r'^(\d{4})').firstMatch(birthDate);
-    return m?.group(1) ?? '';
-  }
-
   void _selectPatient(Patient p) {
     setState(() {
       _patientId = p.id;
       _fullName.text = p.fullName;
-      _birthYear.text = _yearOf(p.birthDate);
+      _birthYear.text = p.birthYear > 0 ? p.birthYear.toString() : '';
       _phone.text = p.phone ?? '';
       _found = const [];
       _searchController.clear();

@@ -15,10 +15,7 @@ const String roleSuperadmin = 'Супер-админ';
 const String roleReception = 'Ресепшен';
 
 /// Порядок ролей для выпадающего списка и кнопок быстрого входа.
-const List<String> kCadmirRoles = <String>[
-  roleReception,
-  roleSuperadmin,
-];
+const List<String> kCadmirRoles = <String>[roleReception, roleSuperadmin];
 
 /// Карта роль → permission-коды. У супер-админа список пуст: полный доступ
 /// даётся флагом `isSuperuser`. Ресепшен — совмещённый фронт-офис с доступом
@@ -49,6 +46,10 @@ const Map<String, List<String>> kRolePermissions = <String, List<String>>{
     'services.read',
     'services.manage',
     'audit.read',
+    // Правка справочников (типы анализов, референсы фиброскана). Супер-админ
+    // получает это право неявно через `isSuperuser` (см. AuthUser.can),
+    // поэтому его в список супер-админа добавлять не нужно.
+    'catalog.manage',
   ],
 };
 
