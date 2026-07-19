@@ -83,8 +83,10 @@ class FibroscanRepository {
 
   /// Создаёт запись исследования. [patientId] опускается для разовой записи без
   /// карты. [date] уже в ISO `YYYY-MM-DD` (конвертирует экран). [lsm]/[cap] —
-  /// измерения прибора (кПа / дБ/м), необязательны. Штампует `created_by` и
-  /// пишет запись аудита (best-effort — аудит не роняет операцию).
+  /// измерения прибора (кПа / дБ/м), [iqrMed] — IQR/Med (%, надёжность),
+  /// [validMeasurements] — число валидных измерений; все необязательны.
+  /// Штампует `created_by` и пишет запись аудита (best-effort — аудит не роняет
+  /// операцию).
   Future<FibroscanRecord> create({
     String? patientId,
     required String fullName,
@@ -93,6 +95,8 @@ class FibroscanRepository {
     required String diagnosis,
     num? lsm,
     num? cap,
+    num? iqrMed,
+    int? validMeasurements,
   }) async {
     final ref = await _col.add(<String, dynamic>{
       if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
@@ -102,6 +106,8 @@ class FibroscanRepository {
       'diagnosis': diagnosis,
       'lsm': ?lsm,
       'cap': ?cap,
+      'iqr_med': ?iqrMed,
+      'valid_measurements': ?validMeasurements,
       'created_by': FirebaseAuth.instance.currentUser?.uid,
       'created_at': FieldValue.serverTimestamp(),
     });
@@ -119,17 +125,20 @@ class FibroscanRepository {
         diagnosis: diagnosis,
         lsm: lsm,
         cap: cap,
+        iqrMed: iqrMed,
+        validMeasurements: validMeasurements,
       ),
     );
     final doc = await ref.get();
     return FibroscanRecord.fromJson({...?doc.data(), 'id': doc.id});
   }
 
-  /// Правит запись (ошибочные ФИО / год / дата / диагноз / LSM / CAP). Передаются
-  /// только изменяемые поля; [date] — ISO `YYYY-MM-DD`. Для [lsm]/[cap] `null`
-  /// означает «очистить поле» (экран всегда передаёт оба значения из формы, где
-  /// они предзаполнены при входе в правку). Штампует `updated_by` + `updated_at`
-  /// и пишет запись аудита.
+  /// Правит запись (ошибочные ФИО / год / дата / диагноз / LSM / CAP / IQR/Med /
+  /// число измерений). Передаются только изменяемые поля; [date] — ISO
+  /// `YYYY-MM-DD`. Для [lsm]/[cap]/[iqrMed]/[validMeasurements] `null` означает
+  /// «очистить поле» (экран всегда передаёт значения из формы, где они
+  /// предзаполнены при входе в правку). Штампует `updated_by` + `updated_at` и
+  /// пишет запись аудита.
   Future<FibroscanRecord> update(
     String id, {
     String? fullName,
@@ -138,6 +147,8 @@ class FibroscanRepository {
     String? diagnosis,
     num? lsm,
     num? cap,
+    num? iqrMed,
+    int? validMeasurements,
   }) async {
     await _col.doc(id).update(<String, dynamic>{
       'full_name': ?fullName,
@@ -146,6 +157,8 @@ class FibroscanRepository {
       'diagnosis': ?diagnosis,
       'lsm': lsm ?? FieldValue.delete(),
       'cap': cap ?? FieldValue.delete(),
+      'iqr_med': iqrMed ?? FieldValue.delete(),
+      'valid_measurements': validMeasurements ?? FieldValue.delete(),
       'updated_by': FirebaseAuth.instance.currentUser?.uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
@@ -162,6 +175,8 @@ class FibroscanRepository {
         diagnosis: diagnosis,
         lsm: lsm,
         cap: cap,
+        iqrMed: iqrMed,
+        validMeasurements: validMeasurements,
       ),
     );
     final doc = await _col.doc(id).get();
@@ -210,6 +225,8 @@ class FibroscanRepository {
     String? diagnosis,
     num? lsm,
     num? cap,
+    num? iqrMed,
+    int? validMeasurements,
   }) => <String, dynamic>{
     if (patientId != null && patientId.isNotEmpty) 'patient_id': patientId,
     'full_name': ?fullName,
@@ -218,6 +235,8 @@ class FibroscanRepository {
     'diagnosis': ?diagnosis,
     'lsm': ?lsm,
     'cap': ?cap,
+    'iqr_med': ?iqrMed,
+    'valid_measurements': ?validMeasurements,
   };
 
   /// Число без лишнего `.0` (для аудита/сводок): `8.0`→`8`, `8.2`→`8.2`.

@@ -6,10 +6,22 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
+import '../../../core/widgets/confirm_dialog.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
 import '../data/services_repository.dart';
 import '../domain/service_item.dart';
+
+/// Стандартный набор услуг клиники «Цадмир» для быстрого наполнения прайса.
+/// Цены — ориентировочные (KGS «сом»), после вставки редактируются как обычно.
+/// Формат записи: (название, цена, категория).
+const List<(String, num, String)> _kStandardServices = <(String, num, String)>[
+  ('Консультация гематолога', 800, 'Консультации'),
+  ('Фиброскан печени (эластометрия)', 2500, 'Диагностика'),
+  ('ОАК', 350, 'Лаборатория'),
+  ('Биохимия крови', 900, 'Лаборатория'),
+  ('ПЦР', 1200, 'Лаборатория'),
+];
 
 /// Экран «Прайс-лист» — управление услугами и ценами (KGS «сом»). Доступ —
 /// у кого есть право `services.manage` (Ресепшен / супер-админ).
@@ -43,6 +55,11 @@ class PriceListScreen extends ConsumerWidget {
         title: const Text('Прайс-лист'),
         actions: [
           IconButton(
+            tooltip: 'Заполнить стандартными',
+            icon: const Icon(Icons.playlist_add, size: 20),
+            onPressed: () => _seedStandard(context, ref),
+          ),
+          IconButton(
             tooltip: 'Обновить',
             icon: const Icon(Icons.refresh, size: 20),
             onPressed: () {
@@ -63,12 +80,25 @@ class PriceListScreen extends ConsumerWidget {
           onRetry: () => ref.invalidate(allServicesProvider),
           builder: (items) {
             if (items.isEmpty) {
-              return const Center(
+              return Center(
                 child: Padding(
-                  padding: EdgeInsets.all(28),
-                  child: Text(
-                    'Услуг пока нет. Нажмите «Услуга», чтобы добавить.',
-                    style: TextStyle(color: AppColors.sub),
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Услуг пока нет. Добавьте свою или заполните '
+                        'стандартными услугами клиники.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: AppColors.sub),
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton.icon(
+                        onPressed: () => _seedStandard(context, ref),
+                        icon: const Icon(Icons.playlist_add, size: 18),
+                        label: const Text('Заполнить стандартными'),
+                      ),
+                    ],
                   ),
                 ),
               );
@@ -155,6 +185,46 @@ class PriceListScreen extends ConsumerWidget {
       if (context.mounted) {
         ref.invalidate(allServicesProvider);
         ref.invalidate(activeServicesProvider);
+      }
+    } catch (e) {
+      if (context.mounted) _snack(context, friendlyError(e), error: true);
+    }
+  }
+
+  /// Вставляет недостающие стандартные услуги клиники (существующие по имени
+  /// не трогает). Каждая услуга проходит через [ServicesRepository.add] —
+  /// с аудитом. Цены — заглушки, редактируются как обычно.
+  Future<void> _seedStandard(BuildContext context, WidgetRef ref) async {
+    final ok = await confirmDialog(
+      context,
+      title: 'Заполнить стандартными?',
+      message:
+          'Будут добавлены недостающие услуги клиники с ориентировочными '
+          'ценами. Существующие услуги не изменятся — цены поправите вручную.',
+      confirmLabel: 'Заполнить',
+      danger: false,
+    );
+    if (!ok || !context.mounted) return;
+    final repo = ref.read(servicesRepositoryProvider);
+    try {
+      // Читаем текущий список, чтобы не плодить дубли по названию.
+      final existing = await repo.list();
+      final names = existing.map((s) => s.name.trim().toLowerCase()).toSet();
+      var added = 0;
+      for (final (name, price, category) in _kStandardServices) {
+        if (names.contains(name.toLowerCase())) continue;
+        await repo.add(name: name, price: price, category: category);
+        added++;
+      }
+      if (context.mounted) {
+        ref.invalidate(allServicesProvider);
+        ref.invalidate(activeServicesProvider);
+        _snack(
+          context,
+          added == 0
+              ? 'Все стандартные услуги уже есть в прайсе'
+              : 'Добавлено услуг: $added',
+        );
       }
     } catch (e) {
       if (context.mounted) _snack(context, friendlyError(e), error: true);

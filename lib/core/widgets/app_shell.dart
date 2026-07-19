@@ -14,7 +14,6 @@ import 'koz_widgets.dart';
 /// routes fall back to the destination's Material icon.
 const Map<String, String> _navIconKey = {
   '/reception': 'reception',
-  '/queue': 'queue',
   '/patients': 'patients',
   '/analyses': 'lab',
   '/inventory': 'inventory',
@@ -50,15 +49,8 @@ const kAppDestinations = <AppDestination>[
     Icons.point_of_sale,
     'Регистратура',
     '/reception',
-    // Регистратура заводит визиты в очередь → гейтинг по visits.create.
+    // Регистратура заводит приёмы → гейтинг по visits.create.
     permissions: ['visits.create'],
-  ),
-  AppDestination(
-    Icons.list_alt_outlined,
-    Icons.list_alt,
-    'Очередь',
-    '/queue',
-    permissions: ['visits.read'],
   ),
   // Касса — оплаты/возвраты (KGS «сом»), дневной кассовый отчёт.
   AppDestination(

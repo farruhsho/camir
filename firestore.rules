@@ -120,6 +120,36 @@ service cloud.firestore {
       allow delete: if isSuper();
     }
 
+    // ---- касса: смены (открытие/закрытие; учёт append-only) ----
+    match /cash_shifts/{id} {
+      allow read: if hasPerm('payments.read');
+      // Открывает кассир; фиксируем автора и стартовый статус `open`.
+      allow create: if hasPerm('payments.create')
+        && request.resource.data.status == 'open'
+        && request.resource.data.opened_by == request.auth.uid;
+      // Единственная правка — закрытие смены: open -> closed, при этом
+      // начальный остаток/день/автор открытия НЕ меняются (реконсиляция
+      // должна сходиться; повторное закрытие отсекается — из closed нельзя).
+      allow update: if hasPerm('payments.create')
+        && resource.data.status == 'open'
+        && request.resource.data.status == 'closed'
+        && request.resource.data.opening_amount == resource.data.opening_amount
+        && request.resource.data.day == resource.data.day
+        && request.resource.data.opened_by == resource.data.opened_by;
+      allow delete: if isSuper();
+    }
+
+    // ---- касса: изъятия наличных (append-only, только создание) ----
+    match /cash_withdrawals/{id} {
+      allow read: if hasPerm('payments.read');
+      // Оформляет кассир; фиксируем автора. Правка запрещена (append-only),
+      // удалить ошибочную запись может только супер-админ.
+      allow create: if hasPerm('payments.create')
+        && request.resource.data.created_by == request.auth.uid;
+      allow update: if false;
+      allow delete: if isSuper();
+    }
+
     // ---- счётчики (MRN / номер очереди) — нужны в транзакциях создания
     // карты пациента и визита. Доступ только тем, кто реально создаёт записи,
     // чтобы «обезоруженный» новый аккаунт не мог накручивать счётчики. ----

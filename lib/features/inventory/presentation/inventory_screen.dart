@@ -12,6 +12,7 @@ import '../../auth/application/auth_controller.dart';
 import '../data/warehouse_repository.dart';
 import '../domain/warehouse_movement.dart';
 import '../domain/warehouse_product.dart';
+import 'warehouse_pdf.dart';
 
 /// Склад на Firestore (без бэкенда): каталог товаров с текущим остатком,
 /// бейдж «мало» при остатке ≤ минимума, добавление/правка/мягкое удаление
@@ -46,6 +47,11 @@ class InventoryScreen extends ConsumerWidget {
         title: const Text('Склад'),
         actions: [
           IconButton(
+            tooltip: 'Экспорт / Отчёт',
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            onPressed: () => _exportReport(context, ref),
+          ),
+          IconButton(
             tooltip: 'Обновить',
             icon: const Icon(Icons.refresh),
             onPressed: () {
@@ -57,19 +63,158 @@ class InventoryScreen extends ConsumerWidget {
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
-        child: wide
-            ? Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 3, child: products),
-                  const SizedBox(width: 16),
-                  Expanded(flex: 2, child: log),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _AlertsCard(),
+            wide
+                ? Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(flex: 3, child: products),
+                      const SizedBox(width: 16),
+                      Expanded(flex: 2, child: log),
+                    ],
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [products, const SizedBox(height: 16), log],
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Строит и открывает складской PDF-отчёт (превью/печать/сохранение).
+  Future<void> _exportReport(BuildContext context, WidgetRef ref) async {
+    final items = ref.read(warehouseStockProvider).valueOrNull;
+    if (items == null || items.isEmpty) {
+      _snack(context, 'Нет данных для отчёта');
+      return;
+    }
+    try {
+      await printWarehouseReport(items);
+    } catch (e) {
+      if (context.mounted) _snack(context, friendlyError(e), error: true);
+    }
+  }
+}
+
+// ═══ Карточка: внимание (сроки годности + мало на складе) ════════════════════
+
+/// Заметная секция «Внимание» вверху экрана: товары с истёкшим/истекающим сроком
+/// годности (≤ [kExpirySoonDays] дней) и товары с остатком ниже минимума. Если
+/// таких нет — не рендерится вовсе ([SizedBox.shrink]).
+class _AlertsCard extends ConsumerWidget {
+  const _AlertsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final items = ref.watch(warehouseStockProvider).valueOrNull ?? const [];
+    final alerts =
+        items
+            .where(
+              (ps) => ps.product.expired || ps.product.expiringSoon || ps.low,
+            )
+            .toList()
+          ..sort((a, b) => _severity(a).compareTo(_severity(b)));
+
+    if (alerts.isEmpty) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: AppCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  size: 20,
+                  color: AppColors.amber,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Внимание — ${alerts.length}',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.ink,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            for (final ps in alerts) _AlertRow(data: ps),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Ранг срочности для сортировки: просрочен → истекает → мало.
+  static int _severity(ProductStock ps) {
+    if (ps.product.expired) return 0;
+    if (ps.product.expiringSoon) return 1;
+    return 2;
+  }
+}
+
+class _AlertRow extends StatelessWidget {
+  const _AlertRow({required this.data});
+
+  final ProductStock data;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = data.product;
+    final badges = <Widget>[
+      if (p.expired)
+        const StatusBadge('истёк', kind: BadgeKind.danger)
+      else if (p.expiringSoon)
+        StatusBadge(_daysLabel(p.daysToExpiry!), kind: BadgeKind.warning),
+      if (data.low) const StatusBadge('мало', kind: BadgeKind.warning),
+    ];
+
+    final info = <String>[
+      if (p.expiry != null) 'срок до ${_fmtDmy(p.expiry!)}',
+      if (data.low) 'остаток ${_trimNum(data.stock)} ${p.unit}',
+    ].join('  ·  ');
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p.name,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.ink,
+                  ),
+                ),
+                if (info.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    info,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      color: AppColors.sub,
+                    ),
+                  ),
                 ],
-              )
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [products, const SizedBox(height: 16), log],
-              ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Wrap(spacing: 6, runSpacing: 6, children: badges),
+        ],
       ),
     );
   }
@@ -201,6 +346,15 @@ class _ProductTile extends ConsumerWidget {
         strong: true,
       ),
       if (data.low) const DetailRow('Статус', 'Мало на складе'),
+      if (p.expiry != null) DetailRow('Срок годности', _fmtDmy(p.expiry!)),
+      if (p.expired)
+        const DetailRow('Статус срока', 'Истёк', strong: true)
+      else if (p.expiringSoon)
+        DetailRow(
+          'Статус срока',
+          'Истекает через ${_daysLabel(p.daysToExpiry!)}',
+          strong: true,
+        ),
       if (p.createdAt != null)
         DetailRow('Добавлен', _fmtDateTime(p.createdAt!)),
       if (p.updatedAt != null)
@@ -300,6 +454,7 @@ class _ProductTile extends ConsumerWidget {
       if (p.category != null && p.category!.isNotEmpty) p.category!,
       'ед. ${p.unit}',
       if (p.minStock != null) 'мин. ${_trimNum(p.minStock!)}',
+      if (p.expiry != null) 'до ${_fmtDmy(p.expiry!)}',
     ].join('  ·  ');
 
     return Padding(
@@ -359,6 +514,16 @@ class _ProductTile extends ConsumerWidget {
                         if (data.low) ...[
                           const SizedBox(height: 4),
                           const StatusBadge('мало', kind: BadgeKind.warning),
+                        ],
+                        if (p.expired) ...[
+                          const SizedBox(height: 4),
+                          const StatusBadge('истёк', kind: BadgeKind.danger),
+                        ] else if (p.expiringSoon) ...[
+                          const SizedBox(height: 4),
+                          StatusBadge(
+                            _daysLabel(p.daysToExpiry!),
+                            kind: BadgeKind.warning,
+                          ),
                         ],
                       ],
                     ),
@@ -647,6 +812,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
   final _name = TextEditingController();
   final _category = TextEditingController();
   final _minStock = TextEditingController();
+  final _expiry = TextEditingController();
   String _unit = kWarehouseUnits.first;
   bool _saving = false;
   String? _error;
@@ -661,6 +827,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
       _name.text = p.name;
       _category.text = p.category ?? '';
       _minStock.text = p.minStock != null ? _trimNum(p.minStock!) : '';
+      _expiry.text = p.expiry != null ? _fmtDmy(p.expiry!) : '';
       _unit = kWarehouseUnits.contains(p.unit) ? p.unit : kWarehouseUnits.first;
     }
   }
@@ -670,11 +837,36 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     _name.dispose();
     _category.dispose();
     _minStock.dispose();
+    _expiry.dispose();
     super.dispose();
+  }
+
+  Future<void> _pickExpiry() async {
+    final now = DateTime.now();
+    final first = DateTime(2000);
+    final last = DateTime(now.year + 20);
+    var initial = _parseDmy(_expiry.text) ?? now;
+    if (initial.isBefore(first)) initial = first;
+    if (initial.isAfter(last)) initial = last;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: first,
+      lastDate: last,
+      helpText: 'Срок годности',
+    );
+    if (picked != null) setState(() => _expiry.text = _fmtDmy(picked));
   }
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
+    // Срок годности необязателен; если задан — должен парситься.
+    final expiryRaw = _expiry.text.trim();
+    final DateTime? expiry = expiryRaw.isEmpty ? null : _parseDmy(expiryRaw);
+    if (expiryRaw.isNotEmpty && expiry == null) {
+      setState(() => _error = 'Неверный срок годности (ДД.ММ.ГГГГ)');
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
@@ -693,6 +885,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
           category: category,
           unit: _unit,
           minStock: minStock,
+          expiry: expiry,
         );
       } else {
         await repo.addProduct(
@@ -700,6 +893,7 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
           category: category,
           unit: _unit,
           minStock: minStock,
+          expiry: expiry,
         );
       }
       if (mounted) Navigator.of(context).pop(true);
@@ -782,6 +976,27 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _expiry,
+                keyboardType: TextInputType.number,
+                inputFormatters: const [DateInputFormatter()],
+                decoration: InputDecoration(
+                  labelText: 'Срок годности (необязательно)',
+                  hintText: 'ДД.ММ.ГГГГ',
+                  isDense: true,
+                  suffixIcon: IconButton(
+                    tooltip: 'Выбрать в календаре',
+                    icon: const Icon(Icons.calendar_today, size: 18),
+                    onPressed: _pickExpiry,
+                  ),
+                ),
+                validator: (v) {
+                  final s = (v ?? '').trim();
+                  if (s.isEmpty) return null; // необязательно
+                  return _parseDmy(s) == null ? 'Неверная дата' : null;
+                },
               ),
               if (_error != null) ...[
                 const SizedBox(height: 12),
@@ -1037,6 +1252,9 @@ String _trimNum(num value) {
   if (value == value.roundToDouble()) return value.toInt().toString();
   return value.toString();
 }
+
+/// Компактная подпись «дней до срока»: 0 → «сегодня», иначе «N дн.».
+String _daysLabel(int days) => days == 0 ? 'сегодня' : '$days дн.';
 
 String _fmtDmy(DateTime d) =>
     '${d.day.toString().padLeft(2, '0')}.'

@@ -43,19 +43,23 @@ class WarehouseRepository {
     return snap.docs.map(_product).where((p) => !p.archived).toList();
   }
 
-  /// Создаёт карточку товара. Пустые необязательные поля не пишутся.
+  /// Создаёт карточку товара. Пустые необязательные поля не пишутся. Срок
+  /// годности [expiry] хранится как ISO `YYYY-MM-DD` (только дата, без времени).
   Future<WarehouseProduct> addProduct({
     required String name,
     String? category,
     required String unit,
     num? minStock,
+    DateTime? expiry,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
+    final expiryIso = _isoDateOrNull(expiry);
     final ref = await _products.add(<String, dynamic>{
       'name': name,
       if (category != null && category.isNotEmpty) 'category': category,
       'unit': unit,
       'min_stock': ?minStock,
+      'expiry': ?expiryIso,
       'stock': 0, // авторитетный остаток; далее меняется только транзакционно
       'archived': false,
       'created_by': uid,
@@ -74,6 +78,7 @@ class WarehouseRepository {
         if (category != null && category.isNotEmpty) 'category': category,
         'unit': unit,
         'min_stock': ?minStock,
+        'expiry': ?expiryIso,
       },
     );
     return product;
@@ -89,8 +94,10 @@ class WarehouseRepository {
     String? category,
     required String unit,
     num? minStock,
+    DateTime? expiry,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
+    final expiryIso = _isoDateOrNull(expiry);
     await _products.doc(id).update(<String, dynamic>{
       'name': name,
       'category': (category != null && category.isNotEmpty)
@@ -98,6 +105,7 @@ class WarehouseRepository {
           : FieldValue.delete(),
       'unit': unit,
       'min_stock': minStock ?? FieldValue.delete(),
+      'expiry': expiryIso ?? FieldValue.delete(),
       'updated_by': uid,
       'updated_at': FieldValue.serverTimestamp(),
     });
@@ -112,6 +120,7 @@ class WarehouseRepository {
         if (category != null && category.isNotEmpty) 'category': category,
         'unit': unit,
         'min_stock': ?minStock,
+        'expiry': ?expiryIso,
       },
     );
   }
@@ -367,10 +376,25 @@ class WarehouseRepository {
       category: data['category'] as String?,
       unit: (data['unit'] as String?) ?? 'шт',
       minStock: data['min_stock'] as num?,
+      expiry: _dateFromIso(data['expiry'] as String?),
       archived: data['archived'] == true,
       createdAt: (data['created_at'] as Timestamp?)?.toDate(),
       updatedAt: (data['updated_at'] as Timestamp?)?.toDate(),
     );
+  }
+
+  /// Дата → ISO `YYYY-MM-DD` (без времени) для хранения; null — если даты нет.
+  String? _isoDateOrNull(DateTime? d) {
+    if (d == null) return null;
+    return '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+  }
+
+  /// ISO `YYYY-MM-DD` (или полный timestamp) → локальная [DateTime]; иначе null.
+  DateTime? _dateFromIso(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return null;
+    return DateTime.tryParse(raw.trim());
   }
 
   WarehouseMovement _movement(DocumentSnapshot<Map<String, dynamic>> doc) {

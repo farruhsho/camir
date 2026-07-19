@@ -7,14 +7,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/formatters.dart';
+import '../../../core/utils/input_formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
 import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
+import '../data/cash_repository.dart';
 import '../data/payments_repository.dart';
 import '../data/services_repository.dart';
+import '../domain/cash_shift.dart';
+import '../domain/cash_withdrawal.dart';
 import '../domain/payment.dart';
 import '../domain/service_item.dart';
 import 'price_list_screen.dart';
@@ -27,6 +31,21 @@ String _fmtDateTime(DateTime? d) {
   final l = d.toLocal();
   String two(int v) => v.toString().padLeft(2, '0');
   return '${two(l.day)}.${two(l.month)}.${l.year} ${two(l.hour)}:${two(l.minute)}';
+}
+
+/// Только время `HH:mm` (для строки статуса смены).
+String _fmtTime(DateTime? d) {
+  if (d == null) return '—';
+  final l = d.toLocal();
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${two(l.hour)}:${two(l.minute)}';
+}
+
+/// SnackBar-хелпер экрана кассы.
+void _snack(BuildContext context, String msg, {bool error = false}) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(msg), backgroundColor: error ? AppColors.red : null),
+  );
 }
 
 /// Касса «Цадмир»: дневной отчёт (собрано / платежей / возвраты) + список
@@ -58,6 +77,11 @@ class PaymentsScreen extends ConsumerWidget {
     final payments = ref.watch(todayPaymentsProvider);
     final refundsToday =
         ref.watch(todayRefundsProvider).valueOrNull ?? const <Payment>[];
+    // Смена и изъятия за день — нужны для строки статуса и расчёта «В кассе».
+    final shift = ref.watch(currentShiftProvider).valueOrNull;
+    final withdrawals =
+        ref.watch(todayWithdrawalsProvider).valueOrNull ??
+        const <CashWithdrawal>[];
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -80,6 +104,8 @@ class PaymentsScreen extends ConsumerWidget {
             onPressed: () {
               ref.invalidate(todayPaymentsProvider);
               ref.invalidate(todayRefundsProvider);
+              ref.invalidate(currentShiftProvider);
+              ref.invalidate(todayWithdrawalsProvider);
             },
           ),
         ],
@@ -104,7 +130,17 @@ class PaymentsScreen extends ConsumerWidget {
               0,
               (s, p) => s + p.total,
             );
-            final net = gross - refundedSum;
+            // Изъятия (расход из кассы), оформленные сегодня.
+            final withdrawnSum = withdrawals.fold<num>(
+              0,
+              (s, w) => s + w.amount,
+            );
+            // Начальный остаток учитываем только при открытой смене.
+            final num opening = (shift != null && shift.isOpen)
+                ? shift.openingAmount
+                : 0;
+            // В кассе = остаток на начало + приход − возвраты − изъятия.
+            final inDrawer = opening + gross - refundedSum - withdrawnSum;
 
             return ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
@@ -115,10 +151,20 @@ class PaymentsScreen extends ConsumerWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        _ShiftBar(
+                          shift: shift,
+                          canManage: canCreate,
+                          onOpen: () => _openShift(context, ref),
+                          onWithdraw: () => _withdraw(context, ref),
+                          onClose: () =>
+                              _closeShift(context, ref, shift!, inDrawer),
+                        ),
+                        const SizedBox(height: 16),
                         _Report(
                           gross: gross,
-                          net: net,
+                          inDrawer: inDrawer,
                           refundedSum: refundedSum,
+                          withdrawnSum: withdrawnSum,
                           count: items.length,
                           payments: items,
                         ),
@@ -162,6 +208,73 @@ class PaymentsScreen extends ConsumerWidget {
     if (created != null && context.mounted) {
       ref.invalidate(todayPaymentsProvider);
       await _showReceipt(context, created);
+    }
+  }
+
+  /// Открыть смену: спросить остаток на начало, создать смену.
+  Future<void> _openShift(BuildContext context, WidgetRef ref) async {
+    final amount = await showDialog<num>(
+      context: context,
+      builder: (_) => const _OpenShiftDialog(),
+    );
+    if (amount == null) return;
+    try {
+      await ref.read(cashRepositoryProvider).openShift(amount);
+      if (context.mounted) {
+        ref.invalidate(currentShiftProvider);
+        _snack(context, 'Смена открыта');
+      }
+    } catch (e) {
+      if (context.mounted) _snack(context, friendlyError(e), error: true);
+    }
+  }
+
+  /// Закрыть смену: показать ожидаемую сумму, ввести факт, показать разницу.
+  Future<void> _closeShift(
+    BuildContext context,
+    WidgetRef ref,
+    CashShift shift,
+    num expected,
+  ) async {
+    final counted = await showDialog<num>(
+      context: context,
+      builder: (_) => _CloseShiftDialog(expected: expected),
+    );
+    if (counted == null) return;
+    try {
+      await ref.read(cashRepositoryProvider).closeShift(shift.id, counted);
+      if (context.mounted) {
+        ref.invalidate(currentShiftProvider);
+        final diff = counted - expected;
+        final msg = diff == 0
+            ? 'Смена закрыта. Касса сходится.'
+            : diff > 0
+            ? 'Смена закрыта. Излишек ${_som(diff)}.'
+            : 'Смена закрыта. Недостача ${_som(diff.abs())}.';
+        _snack(context, msg);
+      }
+    } catch (e) {
+      if (context.mounted) _snack(context, friendlyError(e), error: true);
+    }
+  }
+
+  /// Изъятие из кассы: сумма + причина.
+  Future<void> _withdraw(BuildContext context, WidgetRef ref) async {
+    final result = await showDialog<({num amount, String reason})>(
+      context: context,
+      builder: (_) => const _WithdrawDialog(),
+    );
+    if (result == null) return;
+    try {
+      await ref
+          .read(cashRepositoryProvider)
+          .withdraw(result.amount, result.reason);
+      if (context.mounted) {
+        ref.invalidate(todayWithdrawalsProvider);
+        _snack(context, 'Изъятие оформлено · ${_som(result.amount)}');
+      }
+    } catch (e) {
+      if (context.mounted) _snack(context, friendlyError(e), error: true);
     }
   }
 
@@ -297,8 +410,9 @@ class PaymentsScreen extends ConsumerWidget {
 class _Report extends StatelessWidget {
   const _Report({
     required this.gross,
-    required this.net,
+    required this.inDrawer,
     required this.refundedSum,
+    required this.withdrawnSum,
     required this.count,
     required this.payments,
   });
@@ -306,11 +420,14 @@ class _Report extends StatelessWidget {
   /// Приход за день (валовый, все созданные сегодня).
   final num gross;
 
-  /// Чистый остаток в кассе за день (приход − возвраты).
-  final num net;
+  /// Остаток в кассе = остаток на начало + приход − возвраты − изъятия.
+  final num inDrawer;
 
   /// Возвраты, оформленные сегодня.
   final num refundedSum;
+
+  /// Изъятия из кассы, оформленные сегодня.
+  final num withdrawnSum;
   final int count;
   final List<Payment> payments;
 
@@ -346,8 +463,16 @@ class _Report extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(
                 child: KpiCard(
+                  icon: Icons.north_east,
+                  value: _som(withdrawnSum),
+                  label: 'Изъято',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: KpiCard(
                   icon: Icons.account_balance_wallet_outlined,
-                  value: _som(net),
+                  value: _som(inDrawer),
                   label: 'В кассе',
                 ),
               ),
@@ -523,6 +648,384 @@ class _SectionTitle extends StatelessWidget {
       color: AppColors.ink,
     ),
   );
+}
+
+/// Строка статуса смены + управление кассой (открыть / изъять / закрыть).
+/// Действия видны только при праве `payments.create` ([canManage]).
+class _ShiftBar extends StatelessWidget {
+  const _ShiftBar({
+    required this.shift,
+    required this.canManage,
+    required this.onOpen,
+    required this.onWithdraw,
+    required this.onClose,
+  });
+
+  final CashShift? shift;
+  final bool canManage;
+  final VoidCallback onOpen;
+  final VoidCallback onWithdraw;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = shift;
+    if (s == null) {
+      // Смена не открыта.
+      return AppCard(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            const Icon(Icons.lock_clock_outlined, color: AppColors.muted),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Смена не открыта',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
+                  ),
+                  SizedBox(height: 2),
+                  Text(
+                    'Откройте смену, чтобы вести кассу за день.',
+                    style: TextStyle(fontSize: 12.5, color: AppColors.sub),
+                  ),
+                ],
+              ),
+            ),
+            if (canManage) ...[
+              const SizedBox(width: 10),
+              FilledButton.icon(
+                onPressed: onOpen,
+                icon: const Icon(Icons.play_arrow, size: 18),
+                label: const Text('Открыть смену'),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+    // Смена открыта.
+    return AppCard(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const StatusBadge('Смена открыта', kind: BadgeKind.success),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'с ${_fmtTime(s.openedAt)} · старт ${_som(s.openingAmount)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, color: AppColors.sub),
+                ),
+              ),
+            ],
+          ),
+          if (canManage) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onWithdraw,
+                    icon: const Icon(Icons.north_east, size: 18),
+                    label: const Text('Изъять'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: onClose,
+                    icon: const Icon(Icons.stop, size: 18),
+                    label: const Text('Закрыть смену'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Диалог открытия смены: остаток на начало (KGS «сом»). Возвращает [num].
+class _OpenShiftDialog extends StatefulWidget {
+  const _OpenShiftDialog();
+
+  @override
+  State<_OpenShiftDialog> createState() => _OpenShiftDialogState();
+}
+
+class _OpenShiftDialogState extends State<_OpenShiftDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _amount = TextEditingController();
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Открыть смену'),
+      content: SizedBox(
+        width: 320,
+        child: Form(
+          key: _formKey,
+          child: TextFormField(
+            controller: _amount,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: money(),
+            decoration: const InputDecoration(
+              labelText: 'Сумма на начало, сом',
+              isDense: true,
+            ),
+            validator: (v) {
+              final n = num.tryParse((v ?? '').trim().replaceAll(',', '.'));
+              if (n == null || n < 0) return 'Введите сумму';
+              return null;
+            },
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            final n = num.parse(_amount.text.trim().replaceAll(',', '.'));
+            Navigator.pop(context, n);
+          },
+          child: const Text('Открыть'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Диалог закрытия смены: показывает ожидаемую сумму, принимает факт и
+/// показывает разницу «вживую». Возвращает пересчитанную сумму ([num]).
+class _CloseShiftDialog extends StatefulWidget {
+  const _CloseShiftDialog({required this.expected});
+
+  final num expected;
+
+  @override
+  State<_CloseShiftDialog> createState() => _CloseShiftDialogState();
+}
+
+class _CloseShiftDialogState extends State<_CloseShiftDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _counted = TextEditingController();
+  num? _countedVal;
+
+  @override
+  void initState() {
+    super.initState();
+    _counted.addListener(() {
+      setState(() {
+        _countedVal = num.tryParse(_counted.text.trim().replaceAll(',', '.'));
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _counted.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final counted = _countedVal;
+    final diff = counted == null ? null : counted - widget.expected;
+    return AlertDialog(
+      title: const Text('Закрыть смену'),
+      content: SizedBox(
+        width: 340,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Ожидается в кассе',
+                      style: TextStyle(color: AppColors.sub),
+                    ),
+                  ),
+                  Text(
+                    _som(widget.expected),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _counted,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: money(),
+                decoration: const InputDecoration(
+                  labelText: 'Пересчитано по факту, сом',
+                  isDense: true,
+                ),
+                validator: (v) {
+                  final n = num.tryParse((v ?? '').trim().replaceAll(',', '.'));
+                  if (n == null || n < 0) return 'Введите сумму';
+                  return null;
+                },
+              ),
+              if (diff != null) ...[
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Разница',
+                        style: TextStyle(color: AppColors.sub),
+                      ),
+                    ),
+                    Text(
+                      diff == 0
+                          ? _som(0)
+                          : diff > 0
+                          ? '+${_som(diff)}'
+                          : '−${_som(diff.abs())}',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: diff == 0 ? AppColors.green : AppColors.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            final n = num.parse(_counted.text.trim().replaceAll(',', '.'));
+            Navigator.pop(context, n);
+          },
+          child: const Text('Закрыть смену'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Диалог изъятия из кассы: сумма (обязательно) + причина (обязательно).
+/// Возвращает запись `(amount, reason)`.
+class _WithdrawDialog extends StatefulWidget {
+  const _WithdrawDialog();
+
+  @override
+  State<_WithdrawDialog> createState() => _WithdrawDialogState();
+}
+
+class _WithdrawDialogState extends State<_WithdrawDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _amount = TextEditingController();
+  final _reason = TextEditingController();
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _reason.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Изъятие из кассы'),
+      content: SizedBox(
+        width: 340,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _amount,
+                autofocus: true,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: money(),
+                decoration: const InputDecoration(
+                  labelText: 'Сумма, сом',
+                  isDense: true,
+                ),
+                validator: (v) {
+                  final n = num.tryParse((v ?? '').trim().replaceAll(',', '.'));
+                  if (n == null || n <= 0) return 'Введите сумму';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _reason,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Причина',
+                  isDense: true,
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'Укажите причину' : null,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            final n = num.parse(_amount.text.trim().replaceAll(',', '.'));
+            Navigator.pop(context, (amount: n, reason: _reason.text.trim()));
+          },
+          child: const Text('Изъять'),
+        ),
+      ],
+    );
+  }
 }
 
 /// Диалог проведения платежа. Возвращает созданный [Payment] (или null).

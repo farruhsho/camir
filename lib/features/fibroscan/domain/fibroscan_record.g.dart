@@ -16,6 +16,8 @@ _FibroscanRecord _$FibroscanRecordFromJson(Map<String, dynamic> json) =>
       diagnosis: json['diagnosis'] as String,
       lsm: json['lsm'] as num?,
       cap: json['cap'] as num?,
+      iqrMed: json['iqr_med'] as num?,
+      validMeasurements: (json['valid_measurements'] as num?)?.toInt(),
       createdAt: const FibroTimestampConverter().fromJson(json['created_at']),
     );
 
@@ -29,5 +31,7 @@ Map<String, dynamic> _$FibroscanRecordToJson(_FibroscanRecord instance) =>
       'diagnosis': instance.diagnosis,
       'lsm': instance.lsm,
       'cap': instance.cap,
+      'iqr_med': instance.iqrMed,
+      'valid_measurements': instance.validMeasurements,
       'created_at': const FibroTimestampConverter().toJson(instance.createdAt),
     };

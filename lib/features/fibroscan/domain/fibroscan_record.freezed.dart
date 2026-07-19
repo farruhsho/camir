@@ -26,7 +26,12 @@ mixin _$FibroscanRecord {
 // разовый учёт могут его не содержать).
  num? get lsm;// CAP — контролируемый параметр затухания (дБ/м). По нему через
 // [gradeForCap] выводится степень стеатоза. Необязателен.
- num? get cap;// Когда запись создана (`created_at` из Firestore). Только для отображения в
+ num? get cap;// IQR/Med (%) — межквартильный размах, нормированный на медиану LSM; мера
+// надёжности измерения жёсткости. Клинически валидным сканом печени обычно
+// считают IQR/Med ≤ 30%. Необязателен (старые/разовые записи без него).
+ num? get iqrMed;// Число валидных измерений (обычно прибор набирает 10). Косвенно отражает
+// качество серии. Необязателен.
+ int? get validMeasurements;// Когда запись создана (`created_at` из Firestore). Только для отображения в
 // детальном просмотре — на запись не влияет (штампует репозиторий).
 @FibroTimestampConverter() DateTime? get createdAt;
 /// Create a copy of FibroscanRecord
@@ -41,16 +46,16 @@ $FibroscanRecordCopyWith<FibroscanRecord> get copyWith => _$FibroscanRecordCopyW
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is FibroscanRecord&&(identical(other.id, id) || other.id == id)&&(identical(other.patientId, patientId) || other.patientId == patientId)&&(identical(other.fullName, fullName) || other.fullName == fullName)&&(identical(other.birthYear, birthYear) || other.birthYear == birthYear)&&(identical(other.date, date) || other.date == date)&&(identical(other.diagnosis, diagnosis) || other.diagnosis == diagnosis)&&(identical(other.lsm, lsm) || other.lsm == lsm)&&(identical(other.cap, cap) || other.cap == cap)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is FibroscanRecord&&(identical(other.id, id) || other.id == id)&&(identical(other.patientId, patientId) || other.patientId == patientId)&&(identical(other.fullName, fullName) || other.fullName == fullName)&&(identical(other.birthYear, birthYear) || other.birthYear == birthYear)&&(identical(other.date, date) || other.date == date)&&(identical(other.diagnosis, diagnosis) || other.diagnosis == diagnosis)&&(identical(other.lsm, lsm) || other.lsm == lsm)&&(identical(other.cap, cap) || other.cap == cap)&&(identical(other.iqrMed, iqrMed) || other.iqrMed == iqrMed)&&(identical(other.validMeasurements, validMeasurements) || other.validMeasurements == validMeasurements)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,patientId,fullName,birthYear,date,diagnosis,lsm,cap,createdAt);
+int get hashCode => Object.hash(runtimeType,id,patientId,fullName,birthYear,date,diagnosis,lsm,cap,iqrMed,validMeasurements,createdAt);
 
 @override
 String toString() {
-  return 'FibroscanRecord(id: $id, patientId: $patientId, fullName: $fullName, birthYear: $birthYear, date: $date, diagnosis: $diagnosis, lsm: $lsm, cap: $cap, createdAt: $createdAt)';
+  return 'FibroscanRecord(id: $id, patientId: $patientId, fullName: $fullName, birthYear: $birthYear, date: $date, diagnosis: $diagnosis, lsm: $lsm, cap: $cap, iqrMed: $iqrMed, validMeasurements: $validMeasurements, createdAt: $createdAt)';
 }
 
 
@@ -61,7 +66,7 @@ abstract mixin class $FibroscanRecordCopyWith<$Res>  {
   factory $FibroscanRecordCopyWith(FibroscanRecord value, $Res Function(FibroscanRecord) _then) = _$FibroscanRecordCopyWithImpl;
 @useResult
 $Res call({
- String id, String? patientId, String fullName, int birthYear, String date, String diagnosis, num? lsm, num? cap,@FibroTimestampConverter() DateTime? createdAt
+ String id, String? patientId, String fullName, int birthYear, String date, String diagnosis, num? lsm, num? cap, num? iqrMed, int? validMeasurements,@FibroTimestampConverter() DateTime? createdAt
 });
 
 
@@ -78,7 +83,7 @@ class _$FibroscanRecordCopyWithImpl<$Res>
 
 /// Create a copy of FibroscanRecord
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? patientId = freezed,Object? fullName = null,Object? birthYear = null,Object? date = null,Object? diagnosis = null,Object? lsm = freezed,Object? cap = freezed,Object? createdAt = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? id = null,Object? patientId = freezed,Object? fullName = null,Object? birthYear = null,Object? date = null,Object? diagnosis = null,Object? lsm = freezed,Object? cap = freezed,Object? iqrMed = freezed,Object? validMeasurements = freezed,Object? createdAt = freezed,}) {
   return _then(_self.copyWith(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,patientId: freezed == patientId ? _self.patientId : patientId // ignore: cast_nullable_to_non_nullable
@@ -88,7 +93,9 @@ as int,date: null == date ? _self.date : date // ignore: cast_nullable_to_non_nu
 as String,diagnosis: null == diagnosis ? _self.diagnosis : diagnosis // ignore: cast_nullable_to_non_nullable
 as String,lsm: freezed == lsm ? _self.lsm : lsm // ignore: cast_nullable_to_non_nullable
 as num?,cap: freezed == cap ? _self.cap : cap // ignore: cast_nullable_to_non_nullable
-as num?,createdAt: freezed == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
+as num?,iqrMed: freezed == iqrMed ? _self.iqrMed : iqrMed // ignore: cast_nullable_to_non_nullable
+as num?,validMeasurements: freezed == validMeasurements ? _self.validMeasurements : validMeasurements // ignore: cast_nullable_to_non_nullable
+as int?,createdAt: freezed == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,
   ));
 }
@@ -174,10 +181,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String? patientId,  String fullName,  int birthYear,  String date,  String diagnosis,  num? lsm,  num? cap, @FibroTimestampConverter()  DateTime? createdAt)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String id,  String? patientId,  String fullName,  int birthYear,  String date,  String diagnosis,  num? lsm,  num? cap,  num? iqrMed,  int? validMeasurements, @FibroTimestampConverter()  DateTime? createdAt)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _FibroscanRecord() when $default != null:
-return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.date,_that.diagnosis,_that.lsm,_that.cap,_that.createdAt);case _:
+return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.date,_that.diagnosis,_that.lsm,_that.cap,_that.iqrMed,_that.validMeasurements,_that.createdAt);case _:
   return orElse();
 
 }
@@ -195,10 +202,10 @@ return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.da
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String? patientId,  String fullName,  int birthYear,  String date,  String diagnosis,  num? lsm,  num? cap, @FibroTimestampConverter()  DateTime? createdAt)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String id,  String? patientId,  String fullName,  int birthYear,  String date,  String diagnosis,  num? lsm,  num? cap,  num? iqrMed,  int? validMeasurements, @FibroTimestampConverter()  DateTime? createdAt)  $default,) {final _that = this;
 switch (_that) {
 case _FibroscanRecord():
-return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.date,_that.diagnosis,_that.lsm,_that.cap,_that.createdAt);case _:
+return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.date,_that.diagnosis,_that.lsm,_that.cap,_that.iqrMed,_that.validMeasurements,_that.createdAt);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -215,10 +222,10 @@ return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.da
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String? patientId,  String fullName,  int birthYear,  String date,  String diagnosis,  num? lsm,  num? cap, @FibroTimestampConverter()  DateTime? createdAt)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String id,  String? patientId,  String fullName,  int birthYear,  String date,  String diagnosis,  num? lsm,  num? cap,  num? iqrMed,  int? validMeasurements, @FibroTimestampConverter()  DateTime? createdAt)?  $default,) {final _that = this;
 switch (_that) {
 case _FibroscanRecord() when $default != null:
-return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.date,_that.diagnosis,_that.lsm,_that.cap,_that.createdAt);case _:
+return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.date,_that.diagnosis,_that.lsm,_that.cap,_that.iqrMed,_that.validMeasurements,_that.createdAt);case _:
   return null;
 
 }
@@ -230,7 +237,7 @@ return $default(_that.id,_that.patientId,_that.fullName,_that.birthYear,_that.da
 @JsonSerializable()
 
 class _FibroscanRecord implements FibroscanRecord {
-  const _FibroscanRecord({required this.id, this.patientId, required this.fullName, required this.birthYear, required this.date, required this.diagnosis, this.lsm, this.cap, @FibroTimestampConverter() this.createdAt});
+  const _FibroscanRecord({required this.id, this.patientId, required this.fullName, required this.birthYear, required this.date, required this.diagnosis, this.lsm, this.cap, this.iqrMed, this.validMeasurements, @FibroTimestampConverter() this.createdAt});
   factory _FibroscanRecord.fromJson(Map<String, dynamic> json) => _$FibroscanRecordFromJson(json);
 
 @override final  String id;
@@ -252,6 +259,13 @@ class _FibroscanRecord implements FibroscanRecord {
 // CAP — контролируемый параметр затухания (дБ/м). По нему через
 // [gradeForCap] выводится степень стеатоза. Необязателен.
 @override final  num? cap;
+// IQR/Med (%) — межквартильный размах, нормированный на медиану LSM; мера
+// надёжности измерения жёсткости. Клинически валидным сканом печени обычно
+// считают IQR/Med ≤ 30%. Необязателен (старые/разовые записи без него).
+@override final  num? iqrMed;
+// Число валидных измерений (обычно прибор набирает 10). Косвенно отражает
+// качество серии. Необязателен.
+@override final  int? validMeasurements;
 // Когда запись создана (`created_at` из Firestore). Только для отображения в
 // детальном просмотре — на запись не влияет (штампует репозиторий).
 @override@FibroTimestampConverter() final  DateTime? createdAt;
@@ -269,16 +283,16 @@ Map<String, dynamic> toJson() {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is _FibroscanRecord&&(identical(other.id, id) || other.id == id)&&(identical(other.patientId, patientId) || other.patientId == patientId)&&(identical(other.fullName, fullName) || other.fullName == fullName)&&(identical(other.birthYear, birthYear) || other.birthYear == birthYear)&&(identical(other.date, date) || other.date == date)&&(identical(other.diagnosis, diagnosis) || other.diagnosis == diagnosis)&&(identical(other.lsm, lsm) || other.lsm == lsm)&&(identical(other.cap, cap) || other.cap == cap)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is _FibroscanRecord&&(identical(other.id, id) || other.id == id)&&(identical(other.patientId, patientId) || other.patientId == patientId)&&(identical(other.fullName, fullName) || other.fullName == fullName)&&(identical(other.birthYear, birthYear) || other.birthYear == birthYear)&&(identical(other.date, date) || other.date == date)&&(identical(other.diagnosis, diagnosis) || other.diagnosis == diagnosis)&&(identical(other.lsm, lsm) || other.lsm == lsm)&&(identical(other.cap, cap) || other.cap == cap)&&(identical(other.iqrMed, iqrMed) || other.iqrMed == iqrMed)&&(identical(other.validMeasurements, validMeasurements) || other.validMeasurements == validMeasurements)&&(identical(other.createdAt, createdAt) || other.createdAt == createdAt));
 }
 
 @JsonKey(includeFromJson: false, includeToJson: false)
 @override
-int get hashCode => Object.hash(runtimeType,id,patientId,fullName,birthYear,date,diagnosis,lsm,cap,createdAt);
+int get hashCode => Object.hash(runtimeType,id,patientId,fullName,birthYear,date,diagnosis,lsm,cap,iqrMed,validMeasurements,createdAt);
 
 @override
 String toString() {
-  return 'FibroscanRecord(id: $id, patientId: $patientId, fullName: $fullName, birthYear: $birthYear, date: $date, diagnosis: $diagnosis, lsm: $lsm, cap: $cap, createdAt: $createdAt)';
+  return 'FibroscanRecord(id: $id, patientId: $patientId, fullName: $fullName, birthYear: $birthYear, date: $date, diagnosis: $diagnosis, lsm: $lsm, cap: $cap, iqrMed: $iqrMed, validMeasurements: $validMeasurements, createdAt: $createdAt)';
 }
 
 
@@ -289,7 +303,7 @@ abstract mixin class _$FibroscanRecordCopyWith<$Res> implements $FibroscanRecord
   factory _$FibroscanRecordCopyWith(_FibroscanRecord value, $Res Function(_FibroscanRecord) _then) = __$FibroscanRecordCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String? patientId, String fullName, int birthYear, String date, String diagnosis, num? lsm, num? cap,@FibroTimestampConverter() DateTime? createdAt
+ String id, String? patientId, String fullName, int birthYear, String date, String diagnosis, num? lsm, num? cap, num? iqrMed, int? validMeasurements,@FibroTimestampConverter() DateTime? createdAt
 });
 
 
@@ -306,7 +320,7 @@ class __$FibroscanRecordCopyWithImpl<$Res>
 
 /// Create a copy of FibroscanRecord
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? patientId = freezed,Object? fullName = null,Object? birthYear = null,Object? date = null,Object? diagnosis = null,Object? lsm = freezed,Object? cap = freezed,Object? createdAt = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? patientId = freezed,Object? fullName = null,Object? birthYear = null,Object? date = null,Object? diagnosis = null,Object? lsm = freezed,Object? cap = freezed,Object? iqrMed = freezed,Object? validMeasurements = freezed,Object? createdAt = freezed,}) {
   return _then(_FibroscanRecord(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,patientId: freezed == patientId ? _self.patientId : patientId // ignore: cast_nullable_to_non_nullable
@@ -316,7 +330,9 @@ as int,date: null == date ? _self.date : date // ignore: cast_nullable_to_non_nu
 as String,diagnosis: null == diagnosis ? _self.diagnosis : diagnosis // ignore: cast_nullable_to_non_nullable
 as String,lsm: freezed == lsm ? _self.lsm : lsm // ignore: cast_nullable_to_non_nullable
 as num?,cap: freezed == cap ? _self.cap : cap // ignore: cast_nullable_to_non_nullable
-as num?,createdAt: freezed == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
+as num?,iqrMed: freezed == iqrMed ? _self.iqrMed : iqrMed // ignore: cast_nullable_to_non_nullable
+as num?,validMeasurements: freezed == validMeasurements ? _self.validMeasurements : validMeasurements // ignore: cast_nullable_to_non_nullable
+as int?,createdAt: freezed == createdAt ? _self.createdAt : createdAt // ignore: cast_nullable_to_non_nullable
 as DateTime?,
   ));
 }

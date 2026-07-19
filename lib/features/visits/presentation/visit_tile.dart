@@ -1,94 +1,52 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_colors.dart';
+import '../../../core/utils/formatters.dart';
 import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../domain/visit.dart';
 
-/// Визуальный стиль кнопки действия над визитом.
-enum _ActionStyle { primary, neutral, danger }
-
-/// Одно действие (кнопка) — подпись, иконка, целевой статус, стиль.
-class _VisitAction {
-  const _VisitAction(this.label, this.icon, this.status, this.style);
-  final String label;
-  final IconData icon;
-  final String status;
-  final _ActionStyle style;
-}
-
-/// Набор действий очереди для текущего статуса. Строго соответствует
-/// [kVisitAllowedTransitions]; `completed` — терминальный (действий нет).
-List<_VisitAction> _actionsFor(String status) {
-  switch (status) {
-    case kVisitWaiting:
-      return const [
-        _VisitAction(
-          'Позвать',
-          Icons.campaign_outlined,
-          kVisitInProgress,
-          _ActionStyle.primary,
-        ),
-        _VisitAction(
-          'Отмена',
-          Icons.close,
-          kVisitCancelled,
-          _ActionStyle.danger,
-        ),
-      ];
-    case kVisitInProgress:
-      return const [
-        _VisitAction(
-          'Завершить',
-          Icons.check_circle_outline,
-          kVisitCompleted,
-          _ActionStyle.primary,
-        ),
-        _VisitAction(
-          'Вернуть в очередь',
-          Icons.undo,
-          kVisitWaiting,
-          _ActionStyle.neutral,
-        ),
-      ];
-    case kVisitCancelled:
-      return const [
-        _VisitAction(
-          'Вернуть в очередь',
-          Icons.undo,
-          kVisitWaiting,
-          _ActionStyle.neutral,
-        ),
-      ];
-    default:
-      return const [];
-  }
-}
-
-/// Плитка визита для доски очереди и живой очереди регистратуры: номер, ФИО,
-/// направление, статус и кнопки перехода. [onAction] вызывается с целевым
-/// статусом; [busy] блокирует кнопки во время запроса.
+/// Плитка приёма для списка «Сегодня» регистратуры: пациент, услуга, статус и
+/// действия по стадии приёма.
+///
+/// Действия зависят от статуса и переданных колбэков:
+///  * `awaiting_payment` → «Оплатить» ([onPay]);
+///  * `paid` → «Направить: …» ([onRoute], если у направления есть экран) и
+///    «Завершить» ([onDone]);
+///  * `done` → действий нет.
+/// [busy] блокирует кнопки во время запроса. Тап по плитке открывает единый
+/// детальный просмотр со ВСЕМИ полями приёма.
 class VisitTile extends StatelessWidget {
   const VisitTile({
     super.key,
     required this.visit,
-    required this.onAction,
     this.busy = false,
+    this.onPay,
+    this.onRoute,
+    this.onDone,
   });
 
   final Visit visit;
-  final void Function(String newStatus) onAction;
   final bool busy;
 
-  /// Открывает единый детальный просмотр «список → деталь» со ВСЕМИ полями
-  /// визита (используется и доской очереди, и живой очередью регистратуры).
+  /// Провести оплату приёма (только для `awaiting_payment`).
+  final VoidCallback? onPay;
+
+  /// Направить к специалисту (только для `paid`; `null`, если у направления нет
+  /// профильного экрана, напр. консультация).
+  final VoidCallback? onRoute;
+
+  /// Завершить приём (только для `paid`).
+  final VoidCallback? onDone;
+
+  /// Открывает единый детальный просмотр «список → деталь» со ВСЕМИ полями приёма.
   void _showDetail(BuildContext context) {
     final v = visit;
     showDetailSheet(
       context,
-      title: v.patientName.isEmpty ? 'Визит' : v.patientName,
+      title: v.patientName.isEmpty ? 'Приём' : v.patientName,
       rows: [
-        DetailRow('№ в очереди', '${v.queueNumber}', strong: true),
+        DetailRow('№ приёма', '${v.queueNumber}', strong: true),
         DetailRow('Статус', v.statusLabel, strong: true),
         DetailRow.section('Пациент'),
         DetailRow('ФИО', v.patientName),
@@ -96,27 +54,31 @@ class VisitTile extends StatelessWidget {
         DetailRow('Год рождения', '${v.birthYear}'),
         if (v.phone != null) DetailRow('Телефон', v.phone!),
         DetailRow('Направление', v.referralLabel ?? ''),
+        DetailRow.section('Услуга'),
+        DetailRow('Наименование', v.serviceName ?? ''),
+        if (v.servicePrice != null)
+          DetailRow('Цена', formatMoney(v.servicePrice.toString())),
         if (v.note != null)
           DetailRow('Заметка (консультация регистратуры)', v.note!),
         DetailRow.section('Время'),
         DetailRow('Зарегистрирован', _fmtTs(v.createdAt)),
-        DetailRow('Вызван на приём', _fmtTs(v.calledAt)),
-        DetailRow('Завершён', _fmtTs(v.completedAt)),
-        DetailRow('Отменён', _fmtTs(v.cancelledAt)),
+        DetailRow('Оплачен', _fmtTs(v.paidAt)),
+        DetailRow('Завершён', _fmtTs(v.doneAt)),
         DetailRow.section('Служебное'),
-        DetailRow('ID визита', v.id),
+        DetailRow('ID приёма', v.id),
       ],
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final actions = _actionsFor(visit.status);
     final sub = <String>[
       '№ ${visit.mrn}',
       'г.р. ${visit.birthYear}',
       if (visit.phone != null) visit.phone!,
     ].join('  ·  ');
+
+    final actions = _buildActions();
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -161,6 +123,13 @@ class VisitTile extends StatelessWidget {
                               color: AppColors.sub,
                             ),
                           ),
+                          if (visit.serviceName != null) ...[
+                            const SizedBox(height: 6),
+                            _ServiceChip(
+                              name: visit.serviceName!,
+                              price: visit.servicePrice,
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -187,14 +156,7 @@ class VisitTile extends StatelessWidget {
                     alignment: WrapAlignment.end,
                     spacing: 8,
                     runSpacing: 8,
-                    children: [
-                      for (final a in actions)
-                        _ActionButton(
-                          action: a,
-                          busy: busy,
-                          onTap: () => onAction(a.status),
-                        ),
-                    ],
+                    children: actions,
                   ),
                 ],
               ],
@@ -204,18 +166,56 @@ class VisitTile extends StatelessWidget {
       ),
     );
   }
+
+  /// Кнопки действий для текущего статуса приёма (только те, для которых
+  /// передан колбэк).
+  List<Widget> _buildActions() {
+    if (visit.isAwaitingPayment && onPay != null) {
+      return [
+        _ActionButton(
+          label: 'Оплатить',
+          icon: Icons.payments_outlined,
+          style: _ActionStyle.primary,
+          busy: busy,
+          onTap: onPay!,
+        ),
+      ];
+    }
+    if (visit.isPaid) {
+      return [
+        if (onRoute != null)
+          _ActionButton(
+            label: 'Направить: ${visit.referralLabel}',
+            icon: Icons.arrow_forward,
+            style: _ActionStyle.primary,
+            busy: busy,
+            onTap: onRoute!,
+          ),
+        if (onDone != null)
+          _ActionButton(
+            label: 'Завершить',
+            icon: Icons.check_circle_outline,
+            style: _ActionStyle.neutral,
+            busy: busy,
+            onTap: onDone!,
+          ),
+      ];
+    }
+    return const [];
+  }
 }
 
-/// Форматирует таймстамп события визита как `ДД.ММ.ГГГГ ЧЧ:ММ`
+/// Форматирует таймстамп события приёма как `ДД.ММ.ГГГГ ЧЧ:ММ`
 /// (или пустую строку — тогда строка детали скрывается).
 String _fmtTs(DateTime? d) {
   if (d == null) return '';
+  final l = d.toLocal();
   String two(int v) => v.toString().padLeft(2, '0');
-  return '${two(d.day)}.${two(d.month)}.${d.year.toString().padLeft(4, '0')} '
-      '${two(d.hour)}:${two(d.minute)}';
+  return '${two(l.day)}.${two(l.month)}.${l.year.toString().padLeft(4, '0')} '
+      '${two(l.hour)}:${two(l.minute)}';
 }
 
-/// Квадратный бейдж с номером в очереди (#N).
+/// Квадратный бейдж с номером приёма (#N).
 class _QueueBadge extends StatelessWidget {
   const _QueueBadge(this.number);
   final int number;
@@ -242,30 +242,53 @@ class _QueueBadge extends StatelessWidget {
   }
 }
 
+/// Чип услуги приёма: наименование + цена «сом».
+class _ServiceChip extends StatelessWidget {
+  const _ServiceChip({required this.name, required this.price});
+
+  final String name;
+  final num? price;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = price != null
+        ? '$name · ${formatMoney(price.toString())}'
+        : name;
+    return Pill(label: label, color: AppColors.sub, bg: AppColors.line2);
+  }
+}
+
+/// Визуальный стиль кнопки действия.
+enum _ActionStyle { primary, neutral }
+
 /// Компактная кнопка действия с семантическим стилем.
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
-    required this.action,
+    required this.label,
+    required this.icon,
+    required this.style,
     required this.busy,
     required this.onTap,
   });
 
-  final _VisitAction action;
+  final String label;
+  final IconData icon;
+  final _ActionStyle style;
   final bool busy;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final onPressed = busy ? null : onTap;
-    final icon = Icon(action.icon, size: 17);
-    final label = Text(action.label);
+    final iconWidget = Icon(icon, size: 17);
+    final labelWidget = Text(label);
 
-    switch (action.style) {
+    switch (style) {
       case _ActionStyle.primary:
         return FilledButton.icon(
           onPressed: onPressed,
-          icon: icon,
-          label: label,
+          icon: iconWidget,
+          label: labelWidget,
           style: FilledButton.styleFrom(
             backgroundColor: AppColors.accent,
             foregroundColor: Colors.white,
@@ -276,22 +299,11 @@ class _ActionButton extends StatelessWidget {
       case _ActionStyle.neutral:
         return OutlinedButton.icon(
           onPressed: onPressed,
-          icon: icon,
-          label: label,
+          icon: iconWidget,
+          label: labelWidget,
           style: OutlinedButton.styleFrom(
             foregroundColor: AppColors.tealDark,
             side: const BorderSide(color: AppColors.line),
-            visualDensity: VisualDensity.compact,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          ),
-        );
-      case _ActionStyle.danger:
-        return TextButton.icon(
-          onPressed: onPressed,
-          icon: icon,
-          label: label,
-          style: TextButton.styleFrom(
-            foregroundColor: AppColors.red,
             visualDensity: VisualDensity.compact,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           ),

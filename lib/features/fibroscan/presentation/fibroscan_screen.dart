@@ -15,6 +15,7 @@ import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
 import '../data/fibroscan_repository.dart';
 import '../domain/fibroscan_record.dart';
+import 'fibroscan_pdf.dart';
 
 /// Журнал исследований на фиброскане: список записей + форма записи
 /// (ФИО · год рождения · дата · диагноз из справочника из 6). Пациента можно
@@ -34,6 +35,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
   final _date = TextEditingController();
   final _lsm = TextEditingController();
   final _cap = TextEditingController();
+  final _iqrMed = TextEditingController();
+  final _validMeasurements = TextEditingController();
   String? _diagnosis;
   bool _busy = false;
 
@@ -66,6 +69,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
     _date.dispose();
     _lsm.dispose();
     _cap.dispose();
+    _iqrMed.dispose();
+    _validMeasurements.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -198,6 +203,10 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
       _date.text = _displayDate(r.date);
       _lsm.text = r.lsm != null ? _numStr(r.lsm!) : '';
       _cap.text = r.cap != null ? _numStr(r.cap!) : '';
+      _iqrMed.text = r.iqrMed != null ? _numStr(r.iqrMed!) : '';
+      _validMeasurements.text = r.validMeasurements != null
+          ? r.validMeasurements.toString()
+          : '';
       // Диагноз ставим только если он есть в справочнике (иначе выпадашка
       // упадёт на неизвестном значении из старой записи).
       _diagnosis = kFibroscanDiagnoses.contains(r.diagnosis)
@@ -216,6 +225,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
       _birthYear.clear();
       _lsm.clear();
       _cap.clear();
+      _iqrMed.clear();
+      _validMeasurements.clear();
       _diagnosis = null;
       _date.text = _formatDate(DateTime.now());
     });
@@ -258,6 +269,18 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
       if (_editingId == r.id) _cancelEdit();
       _snack('Запись удалена');
       ref.invalidate(fibroscanListProvider);
+    } catch (e) {
+      if (mounted) _snack(friendlyError(e), error: true);
+    }
+  }
+
+  // ── Печать заключения ────────────────────────────────────────────────────────
+
+  /// Строит и открывает PDF-заключение по записи (превью/печать/сохранение).
+  /// [refs] — справочник для стадии фиброза/степени стеатоза и интерпретации.
+  Future<void> _printReport(FibroscanRecord r, List<FibroRef> refs) async {
+    try {
+      await printFibroscanReport(r, refs);
     } catch (e) {
       if (mounted) _snack(friendlyError(e), error: true);
     }
@@ -309,6 +332,20 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
       _snack('Некорректный CAP (положительное число, дБ/м)', error: true);
       return;
     }
+    // IQR/Med (%) необязателен, но если задан — 0..100 (это относительная мера).
+    final iqrMed = _parseNum(_iqrMed.text);
+    if (_iqrMed.text.trim().isNotEmpty &&
+        (iqrMed == null || iqrMed < 0 || iqrMed > 100)) {
+      _snack('Некорректный IQR/Med (0–100 %)', error: true);
+      return;
+    }
+    // Число валидных измерений необязательно; если задано — положительное целое.
+    final valid = int.tryParse(_validMeasurements.text.trim());
+    if (_validMeasurements.text.trim().isNotEmpty &&
+        (valid == null || valid <= 0)) {
+      _snack('Некорректное число измерений (целое > 0)', error: true);
+      return;
+    }
 
     final iso = _iso(date);
     setState(() => _busy = true);
@@ -323,6 +360,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
           diagnosis: diagnosis,
           lsm: lsm,
           cap: cap,
+          iqrMed: iqrMed,
+          validMeasurements: valid,
         );
         if (!mounted) return;
         _snack('Запись добавлена');
@@ -333,6 +372,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
           _birthYear.clear();
           _lsm.clear();
           _cap.clear();
+          _iqrMed.clear();
+          _validMeasurements.clear();
           _diagnosis = null;
         });
       } else {
@@ -344,6 +385,8 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
           diagnosis: diagnosis,
           lsm: lsm,
           cap: cap,
+          iqrMed: iqrMed,
+          validMeasurements: valid,
         );
         if (!mounted) return;
         _snack('Запись обновлена');
@@ -552,6 +595,26 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
         derive: (v) => gradeForCap(v, refs),
       ),
       const SizedBox(height: 12),
+      // IQR/Med (%) — надёжность измерения LSM. Подсказка «надёжно» (≤ 30 %,
+      // зелёным) / «низкая надёжность» (> 30 %, янтарным) прямо в поле.
+      _iqrMedField(),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _validMeasurements,
+        keyboardType: TextInputType.number,
+        inputFormatters: digitsOnly(2),
+        decoration: const InputDecoration(
+          labelText: 'Валидных измерений',
+          hintText: 'обычно 10',
+          counterText: '',
+          isDense: true,
+          suffix: Text(
+            'изм.',
+            style: TextStyle(fontSize: 12.5, color: AppColors.sub),
+          ),
+        ),
+      ),
+      const SizedBox(height: 12),
       DropdownButtonFormField<String>(
         key: ValueKey('fibro-diag-${_editingId ?? 'new'}'),
         initialValue: _diagnosis,
@@ -610,6 +673,45 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
                     fontSize: 12.5,
                     fontWeight: FontWeight.w700,
                     color: AppColors.accent,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Поле IQR/Med (%) с подсказкой надёжности измерения LSM прямо в поле:
+  /// «надёжно» (≤ 30 %, зелёным) / «низкая надёжность» (> 30 %, янтарным).
+  Widget _iqrMedField() {
+    final value = _parseNum(_iqrMed.text);
+    final show = value != null && value >= 0 && value <= 100;
+    final reliable = show && isFibroIqrReliable(value);
+    final label = show ? fibroReliabilityLabel(value) : '';
+    return TextField(
+      controller: _iqrMed,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: money(),
+      onChanged: (_) => setState(() {}),
+      decoration: InputDecoration(
+        labelText: 'IQR/Med (%)',
+        hintText: 'надёжность LSM',
+        isDense: true,
+        suffix: Text.rich(
+          TextSpan(
+            children: [
+              const TextSpan(
+                text: '%',
+                style: TextStyle(fontSize: 12.5, color: AppColors.sub),
+              ),
+              if (label.isNotEmpty)
+                TextSpan(
+                  text: '  ·  $label',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: reliable ? AppColors.green : AppColors.amber,
                   ),
                 ),
             ],
@@ -722,10 +824,20 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
                   color: AppColors.sub,
                 ),
                 onSelected: (v) {
+                  if (v == 'print') _printReport(r, refs);
                   if (v == 'edit') _startEdit(r);
                   if (v == 'delete') _confirmDelete(r);
                 },
                 itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'print',
+                    child: ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.print_outlined, size: 20),
+                      title: Text('Печать заключения'),
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'edit',
                     child: ListTile(
@@ -761,7 +873,11 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
   /// Детальный просмотр записи (единый bottom-sheet «список → деталь»): все поля
   /// записи, LSM/CAP с производной стадией фиброза и степенью стеатоза.
   Future<void> _showDetail(FibroscanRecord r, List<FibroRef> refs) {
-    final hasMeasures = r.lsm != null || r.cap != null;
+    final hasMeasures =
+        r.lsm != null ||
+        r.cap != null ||
+        r.iqrMed != null ||
+        r.validMeasurements != null;
     final linked = r.patientId != null && r.patientId!.isNotEmpty;
     return showDetailSheet(
       context,
@@ -783,6 +899,13 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
               'CAP (стеатоз)',
               _measureText(r.cap!, 'дБ/м', gradeForCap(r.cap!, refs)),
             ),
+          if (r.iqrMed != null)
+            DetailRow(
+              'IQR/Med',
+              '${_numStr(r.iqrMed!)} % · ${fibroReliabilityLabel(r.iqrMed!)}',
+            ),
+          if (r.validMeasurements != null)
+            DetailRow('Валидных измерений', '${r.validMeasurements}'),
         ],
         const DetailRow.section('Учёт'),
         DetailRow(
@@ -792,6 +915,16 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
         DetailRow(
           'Создано',
           r.createdAt != null ? _displayDateTime(r.createdAt!) : '',
+        ),
+      ],
+      extra: [
+        OutlinedButton.icon(
+          onPressed: () {
+            Navigator.of(context).pop();
+            _printReport(r, refs);
+          },
+          icon: const Icon(Icons.print_outlined, size: 18),
+          label: const Text('Печать заключения'),
         ),
       ],
     );

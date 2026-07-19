@@ -32,6 +32,13 @@ abstract class FibroscanRecord with _$FibroscanRecord {
     // CAP — контролируемый параметр затухания (дБ/м). По нему через
     // [gradeForCap] выводится степень стеатоза. Необязателен.
     num? cap,
+    // IQR/Med (%) — межквартильный размах, нормированный на медиану LSM; мера
+    // надёжности измерения жёсткости. Клинически валидным сканом печени обычно
+    // считают IQR/Med ≤ 30%. Необязателен (старые/разовые записи без него).
+    num? iqrMed,
+    // Число валидных измерений (обычно прибор набирает 10). Косвенно отражает
+    // качество серии. Необязателен.
+    int? validMeasurements,
     // Когда запись создана (`created_at` из Firestore). Только для отображения в
     // детальном просмотре — на запись не влияет (штампует репозиторий).
     @FibroTimestampConverter() DateTime? createdAt,
@@ -64,6 +71,19 @@ class FibroTimestampConverter implements JsonConverter<DateTime?, Object?> {
   @override
   Object? toJson(DateTime? object) => object?.toIso8601String();
 }
+
+/// Порог надёжности измерения LSM по IQR/Med (%). Валидным сканом печени
+/// клинически считают серию с IQR/Med ≤ 30%. Хранится здесь, чтобы экран и
+/// PDF-заключение использовали один порог.
+const num kFibroIqrMedReliableMax = 30;
+
+/// Признак надёжного измерения LSM по IQR/Med (%): `true` при `iqr <= 30`.
+bool isFibroIqrReliable(num iqrMed) => iqrMed <= kFibroIqrMedReliableMax;
+
+/// Текстовая метка надёжности по IQR/Med (%): «надёжно» при ≤ 30 %, иначе
+/// «низкая надёжность».
+String fibroReliabilityLabel(num iqrMed) =>
+    isFibroIqrReliable(iqrMed) ? 'надёжно' : 'низкая надёжность';
 
 /// Справочник диагнозов фиброскана — РОВНО эти шесть кодов (гепатиты и жировая/
 /// неалкогольная болезнь печени). Используется выпадающим списком формы.

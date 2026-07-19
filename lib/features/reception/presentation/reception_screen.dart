@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
+import '../../../core/utils/formatters.dart';
 import '../../../core/utils/input_formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
 import '../../../core/widgets/koz_widgets.dart';
@@ -10,16 +12,27 @@ import '../../auth/application/auth_controller.dart';
 import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
 import '../../patients/presentation/birth_date_field.dart';
+import '../../payments/data/payments_repository.dart';
+import '../../payments/data/services_repository.dart';
+import '../../payments/domain/payment.dart';
+import '../../payments/domain/service_item.dart';
 import '../../visits/data/visit_repository.dart';
 import '../../visits/domain/visit.dart';
 import '../../visits/presentation/visit_tile.dart';
 
-/// Регистратура «Цадмир»: форма регистрации + живая очередь на сегодня. При
-/// регистрации ищется существующая карта по телефону ([PatientsRepository.findByPhone]):
-/// при совпадении предлагается переиспользовать её, иначе заводится новая. Затем
-/// создаётся визит в статусе `waiting` через [VisitRepository]. Список
-/// «Очередь сегодня» тянется из [todayVisitsProvider] и поддерживает те же
-/// действия, что и доска очереди.
+/// Sentinel-значение выпадашки услуг: «своя услуга» (ввод названия + цены).
+const String _kCustomService = '__custom__';
+
+/// Регистратура «Цадмир» — единый гид приёма: **регистрация → оплата →
+/// направление**.
+///
+/// Форма заводит пациента (дедуп по телефону через
+/// [PatientsRepository.findByPhone]) и создаёт приём в статусе
+/// `awaiting_payment` с выбранной услугой (из прайса [activeServicesProvider]
+/// или своей). Список «Сегодня» ([todayVisitsProvider]) показывает приёмы со
+/// статусом и действиями по стадии: «Оплатить» (инкассация прямо здесь +
+/// [VisitRepository.markPaid]), затем «Направить: …» (переход на профильный
+/// экран специалиста) и «Завершить» ([VisitRepository.markDone]).
 class ReceptionScreen extends ConsumerStatefulWidget {
   const ReceptionScreen({super.key});
 
@@ -33,8 +46,11 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   final _firstName = TextEditingController();
   final _middleName = TextEditingController();
   final _phone = TextEditingController();
-  final _disease = TextEditingController();
-  final _consultation = TextEditingController();
+  final _note = TextEditingController();
+
+  /// Поля «своей услуги» (когда в выпадашке выбран [_kCustomService]).
+  final _customServiceName = TextEditingController();
+  final _customServicePrice = TextEditingController();
 
   final _firstNameFocus = FocusNode();
   final _middleNameFocus = FocusNode();
@@ -46,10 +62,20 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   String? _birthDateError;
 
   String? _referral;
+
+  /// id выбранной услуги прайса, либо [_kCustomService] для своей услуги.
+  String? _serviceId;
+
+  /// Счётчик сбросов формы: меняет ключ выпадашек (направление, услуга), чтобы
+  /// после регистрации они визуально очистились (DropdownButtonFormField хранит
+  /// своё значение и не реагирует на обнуление зеркальной переменной без
+  /// пересоздания).
+  int _formGen = 0;
+
   bool _saving = false;
   String? _error;
 
-  /// id визита, по которому сейчас выполняется действие очереди.
+  /// id приёма, по которому сейчас выполняется действие (оплата/завершение).
   String? _busyId;
 
   @override
@@ -59,14 +85,36 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
       _firstName,
       _middleName,
       _phone,
-      _disease,
-      _consultation,
+      _note,
+      _customServiceName,
+      _customServicePrice,
     ]) {
       c.dispose();
     }
     _firstNameFocus.dispose();
     _middleNameFocus.dispose();
     super.dispose();
+  }
+
+  /// Определяет выбранную услугу (имя + цену) из состояния формы.
+  /// Возвращает `(null, null)`, если услуга не выбрана/не валидна.
+  (String?, num?) _resolveService(List<ServiceItem> catalog) {
+    final id = _serviceId;
+    if (id == null) return (null, null);
+    if (id == _kCustomService) {
+      final name = _customServiceName.text.trim();
+      final price = num.tryParse(
+        _customServicePrice.text.trim().replaceAll(',', '.'),
+      );
+      return (
+        name.isEmpty ? null : name,
+        (price != null && price > 0) ? price : null,
+      );
+    }
+    for (final s in catalog) {
+      if (s.id == id) return (s.name, s.price);
+    }
+    return (null, null);
   }
 
   Future<void> _save() async {
@@ -78,6 +126,15 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
       setState(() => _birthDateError = 'Укажите дату рождения');
     }
     if (!formOk || _birthDate == null) return;
+
+    final catalog =
+        ref.read(activeServicesProvider).valueOrNull ?? const <ServiceItem>[];
+    final (serviceName, servicePrice) = _resolveService(catalog);
+    if (serviceName == null || servicePrice == null) {
+      setState(() => _error = 'Не удалось определить услугу');
+      return;
+    }
+
     setState(() {
       _saving = true;
       _error = null;
@@ -106,49 +163,30 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
         birthYear: _birthDate!.year,
         birthDate: _birthDate,
         phone: phone,
-        disease: _disease.text.trim(),
         referral: _referral,
-        consultation: _consultation.text.trim(),
+        consultation: _note.text.trim(),
       );
 
-      // Защита от двойной постановки: если пациент уже в живой очереди сегодня
-      // (ожидает / на приёме), второй визит не создаём.
-      final visitsRepo = ref.read(visitRepositoryProvider);
-      final active = await visitsRepo.listToday(
-        statuses: <String>{kVisitWaiting, kVisitInProgress},
-      );
-      Visit? alreadyQueued;
-      for (final v in active) {
-        if (v.patientId != null && v.patientId == patient.id) {
-          alreadyQueued = v;
-          break;
-        }
-      }
-      if (alreadyQueued != null) {
-        if (mounted) {
-          _snack(
-            'Пациент уже в очереди (№${alreadyQueued.queueNumber})',
-            error: true,
+      // Приём в статусе awaiting_payment с денормализованными полями пациента
+      // и выбранной услугой.
+      await ref
+          .read(visitRepositoryProvider)
+          .create(
+            patientId: patient.id,
+            mrn: patient.mrn,
+            patientName: patient.fullName,
+            birthYear: patient.birthYear,
+            phone: patient.phone,
+            referral: _referral,
+            serviceName: serviceName,
+            servicePrice: servicePrice,
+            note: _note.text.trim(),
           );
-        }
-        return;
-      }
-
-      // Визит в очередь (статус waiting) с денормализованными полями пациента.
-      await visitsRepo.create(
-        patientId: patient.id,
-        mrn: patient.mrn,
-        patientName: patient.fullName,
-        birthYear: patient.birthYear,
-        phone: patient.phone,
-        referral: _referral,
-        note: _consultation.text.trim(),
-      );
 
       ref.invalidate(todayVisitsProvider);
       if (mounted) {
         _resetForm();
-        _snack('Пациент добавлен в очередь');
+        _snack('Пациент зарегистрирован. Приём ожидает оплаты.');
       }
     } catch (e) {
       if (mounted) setState(() => _error = friendlyError(e));
@@ -186,12 +224,109 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
     );
   }
 
-  /// Переход статуса визита из живой очереди.
-  Future<void> _act(String id, String newStatus) async {
+  /// Инкассация приёма: спрашивает способ оплаты, проводит платёж в кассу и
+  /// переводит приём в `paid`. Обновляет список приёмов и дневную кассу.
+  Future<void> _pay(Visit v) async {
+    if (_busyId != null) return;
+    final price = v.servicePrice ?? 0;
+    if (price <= 0) {
+      _snack('У приёма не указана цена услуги', error: true);
+      return;
+    }
+    final method = await _askPaymentMethod(v);
+    if (method == null || !mounted) return;
+
+    setState(() => _busyId = v.id);
+    try {
+      await ref
+          .read(paymentsRepositoryProvider)
+          .create(
+            patientId: v.patientId,
+            patientName: v.patientName,
+            mrn: v.mrn,
+            visitId: v.id,
+            items: [
+              PaymentItem(service: v.serviceName ?? 'Приём', price: price),
+            ],
+            method: method,
+          );
+      await ref.read(visitRepositoryProvider).markPaid(v.id);
+      ref.invalidate(todayVisitsProvider);
+      ref.invalidate(todayPaymentsProvider);
+      if (mounted) _snack('Оплата проведена');
+    } catch (e) {
+      if (mounted) _snack(friendlyError(e), error: true);
+    } finally {
+      if (mounted) setState(() => _busyId = null);
+    }
+  }
+
+  /// Небольшой диалог выбора способа оплаты + подтверждения. Возвращает выбранный
+  /// метод ([kPayMethods]) или `null` при отмене.
+  Future<String?> _askPaymentMethod(Visit v) {
+    var method = kPayCash;
+    final sum = formatMoney((v.servicePrice ?? 0).toString());
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Оплата приёма'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                v.patientName,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.ink,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${v.serviceName ?? 'Приём'} · $sum',
+                style: const TextStyle(color: AppColors.sub),
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                initialValue: method,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Способ оплаты',
+                  isDense: true,
+                ),
+                items: [
+                  for (final m in kPayMethods)
+                    DropdownMenuItem(
+                      value: m,
+                      child: Text(kPayMethodLabels[m]!),
+                    ),
+                ],
+                onChanged: (x) => setLocal(() => method = x ?? kPayCash),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, method),
+              child: Text('Оплатить · $sum'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Завершает приём (`paid` → `done`).
+  Future<void> _markDone(String id) async {
     if (_busyId != null) return;
     setState(() => _busyId = id);
     try {
-      await ref.read(visitRepositoryProvider).setStatus(id, newStatus);
+      await ref.read(visitRepositoryProvider).markDone(id);
       ref.invalidate(todayVisitsProvider);
     } catch (e) {
       if (mounted) _snack(friendlyError(e), error: true);
@@ -200,20 +335,36 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
     }
   }
 
+  /// Профильный экран специалиста по направлению приёма (`null` — нет экрана,
+  /// напр. консультация).
+  static String? _routeForReferral(String? referral) {
+    switch (referral) {
+      case kReferralFibroscan:
+        return '/fibroscan';
+      case kReferralAnalyses:
+        return '/analyses';
+      default:
+        return null;
+    }
+  }
+
   void _resetForm() {
     setState(() {
       _referral = null;
+      _serviceId = null;
       _error = null;
       _birthDate = null;
       _birthDateError = null;
+      _formGen++;
     });
     for (final c in [
       _lastName,
       _firstName,
       _middleName,
       _phone,
-      _disease,
-      _consultation,
+      _note,
+      _customServiceName,
+      _customServicePrice,
     ]) {
       c.clear();
     }
@@ -232,11 +383,12 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   Widget build(BuildContext context) {
     final user = ref.watch(authControllerProvider).user;
     final canCreate = user?.can('visits.create') ?? false;
+    final canPay = user?.can('payments.create') ?? false;
     final queue = ref.watch(todayVisitsProvider);
     final wide = MediaQuery.sizeOf(context).width >= 1000;
 
     final form = _formCard(canCreate);
-    final list = _queueCard(queue);
+    final list = _queueCard(queue, canCreate: canCreate, canPay: canPay);
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -271,7 +423,7 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
           children: [
             const _SectionTitle(
               icon: Icons.person_add_alt_1,
-              text: 'Регистрация пациента',
+              text: 'Регистрация приёма',
             ),
             const SizedBox(height: 14),
             TextFormField(
@@ -356,17 +508,8 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            TextFormField(
-              controller: _disease,
-              textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(
-                labelText: 'Вид болезни',
-                hintText: 'напр. анемия, лейкоз, гепатит…',
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 12),
             DropdownButtonFormField<String>(
+              key: ValueKey('referral_$_formGen'),
               initialValue: _referral,
               isExpanded: true,
               decoration: const InputDecoration(
@@ -378,15 +521,18 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
                   DropdownMenuItem(value: e.key, child: Text(e.value)),
               ],
               onChanged: (v) => setState(() => _referral = v),
+              validator: (v) => v == null ? 'Выберите направление' : null,
             ),
             const SizedBox(height: 12),
+            _serviceSelector(),
+            const SizedBox(height: 12),
             TextFormField(
-              controller: _consultation,
+              controller: _note,
               maxLines: 2,
               textCapitalization: TextCapitalization.sentences,
               decoration: const InputDecoration(
-                labelText: 'Консультация (заметка)',
-                hintText: 'необязательно',
+                labelText: 'Заметка (необязательно)',
+                hintText: 'напр. жалобы, комментарий',
                 isDense: true,
               ),
             ),
@@ -414,7 +560,79 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
     );
   }
 
-  Widget _queueCard(AsyncValue<List<Visit>> queue) {
+  /// Выпадашка услуги (прайс + «своя услуга»). Услуга, за которую платит
+  /// пациент. При выборе своей услуги показывает поля названия и цены.
+  Widget _serviceSelector() {
+    final services = ref.watch(activeServicesProvider);
+    return AsyncValueWidget<List<ServiceItem>>(
+      value: services,
+      onRetry: () => ref.invalidate(activeServicesProvider),
+      builder: (catalog) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            DropdownButtonFormField<String>(
+              key: ValueKey('service_$_formGen'),
+              initialValue: _serviceId,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Услуга (оплата)',
+                isDense: true,
+              ),
+              items: [
+                for (final s in catalog)
+                  DropdownMenuItem(
+                    value: s.id,
+                    child: Text(
+                      '${s.name} · ${formatMoney(s.price.toString())}',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                const DropdownMenuItem(
+                  value: _kCustomService,
+                  child: Text('+ Своя услуга'),
+                ),
+              ],
+              onChanged: (v) => setState(() => _serviceId = v),
+              validator: (v) => v == null ? 'Выберите услугу' : null,
+            ),
+            if (_serviceId == _kCustomService) ...[
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _customServiceName,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Название услуги',
+                  isDense: true,
+                ),
+                validator: (v) =>
+                    (v == null || v.trim().isEmpty) ? 'Укажите название' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _customServicePrice,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: money(),
+                decoration: const InputDecoration(
+                  labelText: 'Цена, сом',
+                  isDense: true,
+                ),
+                validator: validatePositiveNum,
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _queueCard(
+    AsyncValue<List<Visit>> queue, {
+    required bool canCreate,
+    required bool canPay,
+  }) {
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -424,7 +642,7 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
               const Expanded(
                 child: _SectionTitle(
                   icon: Icons.list_alt_outlined,
-                  text: 'Очередь сегодня',
+                  text: 'Приёмы сегодня',
                 ),
               ),
               IconButton(
@@ -456,7 +674,13 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
                     VisitTile(
                       visit: v,
                       busy: _busyId == v.id,
-                      onAction: (s) => _act(v.id, s),
+                      onPay: (v.isAwaitingPayment && canPay)
+                          ? () => _pay(v)
+                          : null,
+                      onRoute: _routeCallback(v),
+                      onDone: (v.isPaid && canCreate)
+                          ? () => _markDone(v.id)
+                          : null,
                     ),
                 ],
               );
@@ -465,6 +689,15 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
         ],
       ),
     );
+  }
+
+  /// Колбэк «Направить» для оплаченного приёма (или `null`, если нет профильного
+  /// экрана по направлению).
+  VoidCallback? _routeCallback(Visit v) {
+    if (!v.isPaid) return null;
+    final route = _routeForReferral(v.referral);
+    if (route == null) return null;
+    return () => context.go(route);
   }
 }
 
