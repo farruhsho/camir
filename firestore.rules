@@ -202,6 +202,14 @@ service cloud.firestore {
       allow create, update, delete: if hasPerm('catalog.manage');
     }
 
+    // ---- склад: справочник категорий товаров (каталог) ----
+    // Читать может любой активный сотрудник (нужно при выборе категории товара);
+    // управлять — держатель inventory.manage (супер-админ неявно).
+    match /product_categories/{id} {
+      allow read: if isActive();
+      allow create, update, delete: if hasPerm('inventory.manage');
+    }
+
     // ---- deny-by-default: всё остальное закрыто ----
     match /{document=**} {
       allow read, write: if false;

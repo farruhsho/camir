@@ -9,6 +9,7 @@ import '../../../core/widgets/confirm_dialog.dart';
 import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
+import '../data/categories_repository.dart';
 import '../data/warehouse_repository.dart';
 import '../domain/warehouse_movement.dart';
 import '../domain/warehouse_product.dart';
@@ -797,6 +798,14 @@ class _MovementTile extends ConsumerWidget {
 
 // ═══ Диалог: добавить / редактировать товар ══════════════════════════════════
 
+/// Значение пункта «— без категории —» (при сохранении → null). Пустая строка
+/// не может совпасть с реальной категорией (та всегда обрезается и непуста).
+const String _kNoCategory = '';
+
+/// Значение пункта-действия «+ Новая категория…» в выпадающем списке. Ведущий
+/// пробел гарантирует, что оно не совпадёт с реальным (обрезанным) названием.
+const String _kAddNewCategory = ' __add_new_category__';
+
 class _ProductDialog extends ConsumerStatefulWidget {
   const _ProductDialog({this.product});
 
@@ -810,10 +819,19 @@ class _ProductDialog extends ConsumerStatefulWidget {
 class _ProductDialogState extends ConsumerState<_ProductDialog> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
-  final _category = TextEditingController();
   final _minStock = TextEditingController();
   final _expiry = TextEditingController();
   String _unit = kWarehouseUnits.first;
+
+  /// Выбранная категория: [_kNoCategory] — «— без категории —» (сохраняется как
+  /// null), иначе — само название. [_kAddNewCategory] в состоянии не хранится
+  /// (это лишь пункт-действие в списке).
+  String _category = _kNoCategory;
+
+  /// Ключ для принудительной пересборки выпадающего списка категорий (нужно,
+  /// чтобы сбросить пункт «+ Новая категория…» после инлайн-добавления/отмены).
+  int _catFieldRev = 0;
+
   bool _saving = false;
   String? _error;
 
@@ -825,7 +843,9 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     final p = widget.product;
     if (p != null) {
       _name.text = p.name;
-      _category.text = p.category ?? '';
+      _category = (p.category != null && p.category!.isNotEmpty)
+          ? p.category!
+          : _kNoCategory;
       _minStock.text = p.minStock != null ? _trimNum(p.minStock!) : '';
       _expiry.text = p.expiry != null ? _fmtDmy(p.expiry!) : '';
       _unit = kWarehouseUnits.contains(p.unit) ? p.unit : kWarehouseUnits.first;
@@ -835,10 +855,73 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
   @override
   void dispose() {
     _name.dispose();
-    _category.dispose();
     _minStock.dispose();
     _expiry.dispose();
     super.dispose();
+  }
+
+  /// Открывает маленький диалог ввода названия новой категории, добавляет её в
+  /// справочник, обновляет провайдер и выбирает новое значение в списке.
+  Future<void> _addCategoryInline() async {
+    final name = await _promptCategoryName();
+    String? canonical;
+    String? err;
+    if (name != null && name.trim().isNotEmpty) {
+      try {
+        canonical = await ref.read(categoriesRepositoryProvider).add(name);
+        ref.invalidate(productCategoriesProvider);
+        await ref.read(productCategoriesProvider.future);
+      } catch (e) {
+        err = friendlyError(e);
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      final c = canonical;
+      if (c != null) _category = c;
+      final e = err;
+      if (e != null) _error = e;
+      // Пересобрать поле, чтобы оно показывало _category, а не «+ Новая…».
+      _catFieldRev++;
+    });
+  }
+
+  /// Небольшой диалог ввода названия категории. Возвращает введённый текст или
+  /// null (отмена/закрытие).
+  Future<String?> _promptCategoryName() async {
+    final controller = TextEditingController();
+    try {
+      return await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Новая категория'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.sentences,
+            maxLength: 60,
+            decoration: const InputDecoration(
+              labelText: 'Название категории',
+              hintText: 'Расходники, Реактивы…',
+              isDense: true,
+            ),
+            onSubmitted: (v) => Navigator.of(ctx).pop(v),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text),
+              child: const Text('Добавить'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      controller.dispose();
+    }
   }
 
   Future<void> _pickExpiry() async {
@@ -874,9 +957,10 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     try {
       final minRaw = _minStock.text.trim();
       final minStock = minRaw.isEmpty ? null : num.tryParse(minRaw);
-      final category = _category.text.trim().isEmpty
+      final category =
+          (_category == _kNoCategory || _category == _kAddNewCategory)
           ? null
-          : _category.text.trim();
+          : _category;
       final repo = ref.read(warehouseRepositoryProvider);
       if (_isEdit) {
         await repo.updateProduct(
@@ -907,6 +991,51 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
     }
   }
 
+  /// Выпадающий список категорий из [productCategoriesProvider] с пунктами
+  /// «— без категории —» и «+ Новая категория…». Категория товара, которой нет
+  /// в справочнике (легаси-значение), подставляется в список, чтобы она
+  /// отображалась и не роняла ассерт.
+  Widget _buildCategoryField() {
+    final cats = ref.watch(productCategoriesProvider).valueOrNull ?? const [];
+    final values = <String>[_kNoCategory, ...cats];
+    // Backward-compat: показать текущую категорию, даже если её нет в справочнике.
+    if (_category != _kNoCategory &&
+        _category != _kAddNewCategory &&
+        !values.contains(_category)) {
+      values.add(_category);
+    }
+    return DropdownButtonFormField<String>(
+      key: ValueKey('category_$_catFieldRev'),
+      initialValue: _category,
+      isExpanded: true,
+      decoration: const InputDecoration(
+        labelText: 'Категория (необязательно)',
+        isDense: true,
+      ),
+      items: [
+        for (final v in values)
+          DropdownMenuItem<String>(
+            value: v,
+            child: Text(v == _kNoCategory ? '— без категории —' : v),
+          ),
+        const DropdownMenuItem<String>(
+          value: _kAddNewCategory,
+          child: Text('+ Новая категория…'),
+        ),
+      ],
+      onChanged: _saving
+          ? null
+          : (v) {
+              if (v == null) return;
+              if (v == _kAddNewCategory) {
+                _addCategoryInline();
+                return;
+              }
+              setState(() => _category = v);
+            },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -931,16 +1060,8 @@ class _ProductDialogState extends ConsumerState<_ProductDialog> {
                     ? 'Обязательное поле'
                     : null,
               ),
-              const SizedBox(height: 4),
-              TextFormField(
-                controller: _category,
-                maxLength: 60,
-                decoration: const InputDecoration(
-                  labelText: 'Категория (необязательно)',
-                  hintText: 'расходники, реактивы…',
-                  isDense: true,
-                ),
-              ),
+              const SizedBox(height: 12),
+              _buildCategoryField(),
               const SizedBox(height: 12),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
