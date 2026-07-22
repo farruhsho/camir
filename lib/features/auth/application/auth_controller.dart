@@ -68,6 +68,22 @@ class AuthController extends Notifier<AuthState> {
     _reloadClinicIdentity();
   }
 
+  /// ⚠️ ВРЕМЕННО (убрать вместе с кнопкой): саморегистрация супер-админа —
+  /// создаёт учётку с полным доступом и сразу входит. Throws [AuthException].
+  Future<void> registerSuperadminTemp(
+    String email,
+    String password,
+    String fullName,
+  ) async {
+    final user = await _repo.registerSuperadminTemp(
+      email: email,
+      password: password,
+      fullName: fullName,
+    );
+    state = AuthState(AuthStatus.authenticated, user);
+    _reloadClinicIdentity();
+  }
+
   /// Быстрый вход по роли (для тестирования) — анонимный Firebase-вход + роль.
   /// Throws [AuthException] on failure.
   Future<void> loginAsRole(String role) async {

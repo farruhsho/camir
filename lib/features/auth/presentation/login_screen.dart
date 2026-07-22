@@ -31,6 +31,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _obscurePassword = true;
   bool _remember = true;
   bool _signUpMode = false;
+  // ⚠️ ВРЕМЕННО: режим саморегистрации супер-админа (кнопка ниже; убрать потом).
+  bool _superRegMode = false;
   String? _error;
 
   @override
@@ -78,7 +80,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final email = _email.text.trim();
     try {
-      if (_signUpMode) {
+      if (_superRegMode) {
+        // ⚠️ ВРЕМЕННО: регистрируемся супер-админом и остаёмся в системе —
+        // роутер уводит на домашний экран.
+        await auth.registerSuperadminTemp(
+          email,
+          _password.text,
+          _fullName.text.trim(),
+        );
+      } else if (_signUpMode) {
         await auth.signUp(email, _password.text, _fullName.text.trim());
         // Аккаунт создаётся обезоруженным (без прав) и сразу выходит из системы:
         // возвращаем форму в режим входа и показываем пояснение.
@@ -268,13 +278,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ),
                         validator: (v) {
                           if (v == null || v.isEmpty) return 'Введите пароль';
-                          if (_signUpMode && v.length < 6) {
+                          if ((_signUpMode || _superRegMode) && v.length < 6) {
                             return 'Минимум 6 символов';
                           }
                           return null;
                         },
                       ),
-                      if (_signUpMode) ...[
+                      if (_signUpMode || _superRegMode) ...[
                         const SizedBox(height: 16),
                         TextFormField(
                           controller: _fullName,
@@ -288,6 +298,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               ? 'Введите ФИО'
                               : null,
                         ),
+                      ],
+                      if (_signUpMode) ...[
                         const SizedBox(height: 16),
                         Container(
                           padding: const EdgeInsets.all(12),
@@ -316,7 +328,40 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             ],
                           ),
                         ),
-                      ] else ...[
+                      ],
+                      // ⚠️ ВРЕМЕННО: предупреждение режима саморегистрации супера.
+                      if (_superRegMode) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: scheme.errorContainer,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.warning_amber_rounded,
+                                size: 18,
+                                color: scheme.onErrorContainer,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  '⚠️ Временно: аккаунт получит ПОЛНЫЙ доступ '
+                                  '(супер-админ + управление клиниками). Уберите '
+                                  'эту кнопку перед реальным продом.',
+                                  style: textTheme.bodySmall?.copyWith(
+                                    color: scheme.onErrorContainer,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      if (!_signUpMode && !_superRegMode) ...[
                         const SizedBox(height: 8),
                         CheckboxListTile(
                           value: _remember,
@@ -344,17 +389,53 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   strokeWidth: 2,
                                 ),
                               )
-                            : Text(_signUpMode ? 'Создать аккаунт' : 'Войти'),
+                            : Text(
+                                _superRegMode
+                                    ? 'Стать супер-админом'
+                                    : (_signUpMode
+                                          ? 'Создать аккаунт'
+                                          : 'Войти'),
+                              ),
                       ),
                       const SizedBox(height: 8),
                       TextButton(
-                        onPressed: _loading ? null : _toggleMode,
+                        onPressed: _loading
+                            ? null
+                            : () {
+                                if (_superRegMode) {
+                                  setState(() {
+                                    _superRegMode = false;
+                                    _error = null;
+                                  });
+                                } else {
+                                  _toggleMode();
+                                }
+                              },
                         child: Text(
-                          _signUpMode
-                              ? 'Уже есть аккаунт? Войти'
-                              : 'Создать аккаунт',
+                          _superRegMode
+                              ? 'Назад ко входу'
+                              : (_signUpMode
+                                    ? 'Уже есть аккаунт? Войти'
+                                    : 'Создать аккаунт'),
                         ),
                       ),
+                      // ⚠️ ВРЕМЕННО — УБРАТЬ вместе с TEMP-строкой в firestore.rules
+                      // и методами registerSuperadminTemp.
+                      if (!_signUpMode && !_superRegMode)
+                        TextButton(
+                          onPressed: _loading
+                              ? null
+                              : () => setState(() {
+                                  _superRegMode = true;
+                                  _error = null;
+                                }),
+                          style: TextButton.styleFrom(
+                            foregroundColor: scheme.error,
+                          ),
+                          child: const Text(
+                            'Регистрация супер-админа (временно)',
+                          ),
+                        ),
                     ],
                   ),
                 ),

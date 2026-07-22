@@ -242,6 +242,10 @@ service cloud.firestore {
                 || request.resource.data.role == '')
             && request.resource.data.get('clinic_id', '') == ''
             && request.resource.data.get('is_platform_admin', false) != true);
+      // ⚠️ ВРЕМЕННО — УБРАТЬ ПЕРЕД ПРОДОМ (эта одна строка + кнопка на входе).
+      // Кнопка «Регистрация супер-админа» разрешает завести СВОЙ staff-док с
+      // любыми правами (супер + платформенный). Это самоэскалация — снять.
+      allow create: if request.auth.uid == uid; // TEMP-SUPER-SIGNUP
       // Правка супером: только своя клиника; платформенный флаг и клиника
       // сотрудника при этом НЕ меняются (get с дефолтом — поля могло не быть).
       allow update: if isPlatform()
