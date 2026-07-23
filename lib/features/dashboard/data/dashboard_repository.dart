@@ -56,35 +56,42 @@ class DashboardRepository {
     var paidCountToday = 0;
     final methodTotals = <String, num>{for (final m in kPayMethods) m: 0};
 
-    final rangeSnap = await _db
-        .collection('payments')
-        .where('clinic_id', isEqualTo: ClinicScope.current)
-        .where('day', isGreaterThanOrEqualTo: startDayIso)
-        .get();
-    for (final doc in rangeSnap.docs) {
-      final Payment p;
-      try {
-        p = Payment.fromMap({...doc.data(), 'id': doc.id});
-      } catch (e) {
-        debugPrint('dashboard: пропущен платёж ${doc.id}: $e');
-        continue;
-      }
-      final isPaid = p.status == kPayPaid;
-      if (p.day == todayIso) {
-        grossToday += p.total;
-        if (isPaid) {
-          revenueToday += p.total;
-          paidCountToday++;
-          // Разбивка по способам: смешанный платёж засчитывается в каждый способ
-          // своей частью (наличные — в «Наличные», карта — в «Карту» и т.д.).
-          for (final e in p.methodBreakdown().entries) {
-            methodTotals[e.key] = (methodTotals[e.key] ?? 0) + e.value;
+    // Запрос защищён try/catch: сбой (напр. индекс `(clinic_id, day)` ещё
+    // строится, или транзиентная ошибка) НЕ должен ронять весь дашборд —
+    // секция выручки деградирует до нулей, остальные показатели остаются.
+    try {
+      final rangeSnap = await _db
+          .collection('payments')
+          .where('clinic_id', isEqualTo: ClinicScope.current)
+          .where('day', isGreaterThanOrEqualTo: startDayIso)
+          .get();
+      for (final doc in rangeSnap.docs) {
+        final Payment p;
+        try {
+          p = Payment.fromMap({...doc.data(), 'id': doc.id});
+        } catch (e) {
+          debugPrint('dashboard: пропущен платёж ${doc.id}: $e');
+          continue;
+        }
+        final isPaid = p.status == kPayPaid;
+        if (p.day == todayIso) {
+          grossToday += p.total;
+          if (isPaid) {
+            revenueToday += p.total;
+            paidCountToday++;
+            // Разбивка по способам: смешанный платёж засчитывается в каждый
+            // способ своей частью (наличные — в «Наличные», карта — в «Карту»).
+            for (final e in p.methodBreakdown().entries) {
+              methodTotals[e.key] = (methodTotals[e.key] ?? 0) + e.value;
+            }
           }
         }
+        if (isPaid && revByIso.containsKey(p.day)) {
+          revByIso[p.day] = (revByIso[p.day] ?? 0) + p.total;
+        }
       }
-      if (isPaid && revByIso.containsKey(p.day)) {
-        revByIso[p.day] = (revByIso[p.day] ?? 0) + p.total;
-      }
+    } catch (e) {
+      debugPrint('dashboard: платежи за период недоступны: $e');
     }
 
     // ── Возвраты, оформленные сегодня (по `refund_day`) ───────────────────────
