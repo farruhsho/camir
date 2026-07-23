@@ -58,8 +58,13 @@ service cloud.firestore {
       return staffData().clinic_id;
     }
     // Платформенный администратор (управляет клиниками, заводит им админов).
+    // Платформенный управляющий: явный флаг is_platform_admin ЛИБО супер-админ
+    // (супер = полный управляющий — реестр клиник и кросс-клиничный персонал).
+    // Изоляция ДАННЫХ пациентов не зависит от этого — она в правилах коллекций
+    // данных (sameClinic), не здесь.
     function isPlatform() {
-      return isActive() && staffData().is_platform_admin == true;
+      return isActive() && (staffData().is_platform_admin == true
+        || staffData().is_superuser == true);
     }
     // Существующий документ принадлежит клинике сотрудника (read/update/delete).
     function sameClinic() {

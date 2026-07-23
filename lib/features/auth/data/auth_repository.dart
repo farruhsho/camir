@@ -254,7 +254,12 @@ class AuthRepository {
     }
     final role = (data['role'] as String?)?.trim() ?? '';
     final isSuper = data['is_superuser'] == true;
-    final isPlatformAdmin = data['is_platform_admin'] == true;
+    // Супер-админ = полный управляющий: автоматически получает права
+    // платформенного администратора (управление всеми клиниками и аккаунтами).
+    // Изоляция ДАННЫХ пациентов между клиниками при этом сохраняется — она
+    // держится на фильтре `clinic_id` в репозиториях и правилах данных, не на
+    // этом флаге (он открывает только реестр клиник и кросс-клиничный персонал).
+    final isPlatformAdmin = data['is_platform_admin'] == true || isSuper;
     final clinicId = (data['clinic_id'] as String?)?.trim() ?? '';
     // Мульти-клиничность: без назначенной клиники нет доступа к данным. Супер и
     // платформенный админ входят и без клиники (bootstrap / управление
