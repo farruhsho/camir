@@ -15,6 +15,7 @@ class StaffMember {
     this.clinicId = '',
     this.isSuperuser = false,
     this.disabled = false,
+    this.permissions = const <String>[],
     this.createdAt,
   });
 
@@ -36,6 +37,12 @@ class StaffMember {
   /// Доступ отозван: такой сотрудник не пускается в приложение (проверка при
   /// входе в `AuthRepository._userFromUid`).
   final bool disabled;
+
+  /// Гранулярные permission-коды сотрудника (`patients.read`, `payments.refund`
+  /// …). Обычно вычисляются из роли ([permissionsForRole]), но платформенный
+  /// владелец может точечно переопределить их (редактор «Права»). У супер-админа
+  /// полный доступ идёт через [isSuperuser] — этот список для него не важен.
+  final List<String> permissions;
 
   final DateTime? createdAt;
 
@@ -67,6 +74,8 @@ class StaffMember {
       return null;
     }
 
+    final rawPerms = map['permissions'];
+
     return StaffMember(
       uid: map['uid']?.toString() ?? '',
       email: map['email']?.toString() ?? '',
@@ -75,6 +84,9 @@ class StaffMember {
       clinicId: map['clinic_id']?.toString() ?? '',
       isSuperuser: map['is_superuser'] == true,
       disabled: map['disabled'] == true,
+      permissions: rawPerms is List
+          ? rawPerms.map((e) => e.toString()).toList()
+          : const <String>[],
       createdAt: readTs(map['created_at']),
     );
   }

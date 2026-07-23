@@ -9,8 +9,11 @@ import '../../../core/widgets/confirm_dialog.dart';
 import '../../../core/widgets/detail_sheet.dart';
 import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
+import '../../staff/data/staff_repository.dart';
+import '../../staff/domain/staff_member.dart';
 import '../data/clinics_repository.dart';
 import '../domain/clinic.dart';
+import 'clinic_staff_screen.dart';
 
 /// Экран «Клиники» — ТОЛЬКО для платформенного администратора: реестр клиник,
 /// заведение новой клиники с её первым (клиническим) супер-админом и
@@ -43,6 +46,17 @@ class ClinicsScreen extends ConsumerWidget {
     }
 
     final clinics = ref.watch(clinicsProvider);
+    // Сводка по сотрудникам: платформенный владелец получает из staffListProvider
+    // ВСЕХ сотрудников (без фильтра по клинике) — считаем на клиенте, сколько их
+    // в каждой клинике и всего. Пока список грузится — счётчики скрыты (null).
+    final staffAsync = ref.watch(staffListProvider);
+    final staffLoaded = staffAsync.hasValue;
+    final allStaff = staffAsync.valueOrNull ?? const <StaffMember>[];
+    final staffByClinic = <String, int>{};
+    for (final s in allStaff) {
+      staffByClinic.update(s.clinicId, (v) => v + 1, ifAbsent: () => 1);
+    }
+
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -84,9 +98,18 @@ class ClinicsScreen extends ConsumerWidget {
                     constraints: const BoxConstraints(maxWidth: 720),
                     child: Column(
                       children: [
+                        _ClinicsSummary(
+                          clinicCount: items.length,
+                          staffCount: staffLoaded ? allStaff.length : null,
+                        ),
+                        const SizedBox(height: 12),
                         for (final c in items)
                           _ClinicTile(
                             clinic: c,
+                            staffCount: staffLoaded
+                                ? (staffByClinic[c.id] ?? 0)
+                                : null,
+                            onViewStaff: () => _viewStaff(context, c),
                             onToggleActive: () =>
                                 _toggleActive(context, ref, c),
                             onAddAdmin: () => _addAdmin(context, ref, c),
@@ -139,6 +162,15 @@ class ClinicsScreen extends ConsumerWidget {
         ),
       );
     }
+  }
+
+  /// «Сотрудники» — открывает список сотрудников ЭТОЙ клиники (те же диалоги
+  /// роль/права/доступ). Так владелец видит «кто из какой клиники» и управляет
+  /// персоналом прямо из карточки.
+  void _viewStaff(BuildContext context, Clinic c) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => ClinicStaffScreen(clinic: c)),
+    );
   }
 
   /// Завести дополнительного/первого администратора существующей клиники.
@@ -236,13 +268,20 @@ class _ClinicTile extends StatelessWidget {
     required this.onAddAdmin,
     required this.onEditModules,
     required this.onEdit,
+    required this.onViewStaff,
+    this.staffCount,
   });
 
   final Clinic clinic;
+
+  /// Число сотрудников этой клиники (`null`, пока список ещё грузится).
+  final int? staffCount;
+
   final VoidCallback onToggleActive;
   final VoidCallback onAddAdmin;
   final VoidCallback onEditModules;
   final VoidCallback onEdit;
+  final VoidCallback onViewStaff;
 
   @override
   Widget build(BuildContext context) {
@@ -250,7 +289,7 @@ class _ClinicTile extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 10),
       child: AppCard(
         padding: const EdgeInsets.all(14),
-        onTap: () => _showClinicDetail(context, clinic),
+        onTap: () => _showClinicDetail(context, clinic, staffCount: staffCount),
         child: Row(
           children: [
             InitialsAvatar(_clinicInitials(clinic.name), size: 42),
@@ -289,9 +328,20 @@ class _ClinicTile extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 6),
-                  StatusBadge(
-                    clinic.active ? 'Активна' : 'Неактивна',
-                    kind: clinic.active ? BadgeKind.success : BadgeKind.neutral,
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      StatusBadge(
+                        clinic.active ? 'Активна' : 'Неактивна',
+                        kind: clinic.active
+                            ? BadgeKind.success
+                            : BadgeKind.neutral,
+                      ),
+                      if (staffCount != null)
+                        Pill(label: 'Сотрудников: $staffCount'),
+                    ],
                   ),
                 ],
               ),
@@ -299,12 +349,14 @@ class _ClinicTile extends StatelessWidget {
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert, color: AppColors.sub),
               onSelected: (v) {
+                if (v == 'staff') onViewStaff();
                 if (v == 'admin') onAddAdmin();
                 if (v == 'modules') onEditModules();
                 if (v == 'edit') onEdit();
                 if (v == 'active') onToggleActive();
               },
               itemBuilder: (_) => [
+                const PopupMenuItem(value: 'staff', child: Text('Сотрудники')),
                 const PopupMenuItem(
                   value: 'admin',
                   child: Text('Добавить администратора'),
@@ -329,6 +381,41 @@ class _ClinicTile extends StatelessWidget {
   }
 }
 
+/// Сводная строка вверху экрана: всего клиник и всего сотрудников (по всем
+/// клиникам). [staffCount] == null, пока список сотрудников ещё грузится.
+class _ClinicsSummary extends StatelessWidget {
+  const _ClinicsSummary({required this.clinicCount, this.staffCount});
+
+  final int clinicCount;
+  final int? staffCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 112,
+      child: Row(
+        children: [
+          Expanded(
+            child: KpiCard(
+              icon: Icons.local_hospital_outlined,
+              value: '$clinicCount',
+              label: 'Клиник',
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: KpiCard(
+              icon: Icons.groups_outlined,
+              value: staffCount == null ? '…' : '$staffCount',
+              label: 'Сотрудников',
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Инициалы для аватара клиники (до двух первых букв названия).
 String _clinicInitials(String name) {
   final trimmed = name.trim();
@@ -341,7 +428,7 @@ String _clinicInitials(String name) {
 }
 
 /// Единый детальный просмотр «список → деталь» со всеми полями клиники.
-void _showClinicDetail(BuildContext context, Clinic c) {
+void _showClinicDetail(BuildContext context, Clinic c, {int? staffCount}) {
   showDetailSheet(
     context,
     title: c.name.isEmpty ? c.id : c.name,
@@ -350,6 +437,7 @@ void _showClinicDetail(BuildContext context, Clinic c) {
       DetailRow('Тип', c.typeInfo.label),
       DetailRow('Специальность', c.subtitle),
       DetailRow('Статус', c.active ? 'Активна' : 'Неактивна', strong: true),
+      DetailRow('Сотрудников', staffCount?.toString() ?? ''),
       DetailRow.section('Модули'),
       DetailRow('Включены', _modulesLabel(c.modules)),
       DetailRow.section('Служебное'),

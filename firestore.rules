@@ -11,11 +11,15 @@ rules_version = '2';
 // Мульти-клиничность: каждый бизнес-документ несёт поле `clinic_id` (String).
 // Сотрудник видит и меняет ТОЛЬКО документы своей клиники
 // (resource.data.clinic_id == staff/{uid}.clinic_id), и не может ни создать, ни
-// «увести» документ в чужую клинику. Платформенный администратор
-// (is_platform_admin) управляет коллекцией clinics и заводит клиникам первого
-// супер-админа; его доступ к операционным данным всё равно ограничен его
-// собственной клиникой. Изоляцию дублирует клиент (ClinicScope), но граница
-// безопасности — здесь.
+// «увести» документ в чужую клинику. Платформенный владелец (is_platform_admin
+// / is_superuser) управляет коллекцией clinics, заводит клиникам первого
+// супер-админа и ЧИТАЕТ операционные данные всех клиник (кросс-клиничный надзор
+// и агрегатная аналитика). Персоналом/ролями/правами любой клиники владелец
+// управляет (staff — под isPlatform). ЗАПИСЬ операционных данных владельца
+// остаётся в его ДОМАШНЕЙ клинике (clinic_id из staff-профиля; sameClinic на
+// create/update/delete) — переключение клиник даёт надзор и управление
+// персоналом, но не ввод данных за чужую клинику. Изоляцию дублирует клиент
+// (ClinicScope), но граница безопасности — здесь.
 //
 // Локальная разработка: используйте firestore.rules.dev (открытые правила),
 // прод деплоится строго с этого файла (см. firebase.json).
@@ -57,11 +61,13 @@ service cloud.firestore {
     function myClinic() {
       return staffData().clinic_id;
     }
-    // Платформенный администратор (управляет клиниками, заводит им админов).
+    // Платформенный владелец (управляет клиниками, заводит им админов).
     // Платформенный управляющий: явный флаг is_platform_admin ЛИБО супер-админ
     // (супер = полный управляющий — реестр клиник и кросс-клиничный персонал).
-    // Изоляция ДАННЫХ пациентов не зависит от этого — она в правилах коллекций
-    // данных (sameClinic), не здесь.
+    // Даёт кросс-клиничное ЧТЕНИЕ операционных данных (sameClinic() ||
+    // isPlatform() в read коллекций) для надзора/аналитики; ЗАПИСЬ операционных
+    // данных остаётся в ДОМАШНЕЙ клинике владельца (sameClinic на
+    // create/update/delete). Управление персоналом (staff) — под isPlatform.
     function isPlatform() {
       return isActive() && (staffData().is_platform_admin == true
         || staffData().is_superuser == true);
@@ -78,7 +84,7 @@ service cloud.firestore {
 
     // ---- пациенты ----
     match /patients/{id} {
-      allow read: if hasPerm('patients.read') && sameClinic();
+      allow read: if hasPerm('patients.read') && (sameClinic() || isPlatform());
       allow create: if hasPerm('patients.create') && createSameClinic();
       allow update: if hasPerm('patients.update')
         && sameClinic() && createSameClinic();
@@ -87,7 +93,7 @@ service cloud.firestore {
 
     // ---- визиты (регистратура/очередь) ----
     match /visits/{id} {
-      allow read: if hasPerm('visits.read') && sameClinic();
+      allow read: if hasPerm('visits.read') && (sameClinic() || isPlatform());
       allow create: if hasPerm('visits.create') && createSameClinic();
       allow update: if hasPerm('visits.update')
         && sameClinic() && createSameClinic();
@@ -96,7 +102,7 @@ service cloud.firestore {
 
     // ---- анализы ----
     match /analyses/{id} {
-      allow read: if hasPerm('analyses.read') && sameClinic();
+      allow read: if hasPerm('analyses.read') && (sameClinic() || isPlatform());
       allow create: if hasPerm('analyses.write') && createSameClinic();
       allow update: if hasPerm('analyses.write')
         && sameClinic() && createSameClinic();
@@ -107,7 +113,7 @@ service cloud.firestore {
 
     // ---- фиброскан ----
     match /fibroscan/{id} {
-      allow read: if hasPerm('fibroscan.read') && sameClinic();
+      allow read: if hasPerm('fibroscan.read') && (sameClinic() || isPlatform());
       allow create: if hasPerm('fibroscan.write') && createSameClinic();
       allow update: if hasPerm('fibroscan.write')
         && sameClinic() && createSameClinic();
@@ -116,7 +122,7 @@ service cloud.firestore {
 
     // ---- склад: номенклатура ----
     match /products/{id} {
-      allow read: if hasPerm('inventory.read') && sameClinic();
+      allow read: if hasPerm('inventory.read') && (sameClinic() || isPlatform());
       allow create: if hasPerm('inventory.manage') && createSameClinic();
       allow update: if hasPerm('inventory.manage')
         && sameClinic() && createSameClinic();
@@ -125,7 +131,7 @@ service cloud.firestore {
 
     // ---- склад: движения (приход/списание) ----
     match /stock_movements/{id} {
-      allow read: if hasPerm('inventory.read') && sameClinic();
+      allow read: if hasPerm('inventory.read') && (sameClinic() || isPlatform());
       allow create: if (hasPerm('inventory.write_off')
           || hasPerm('inventory.manage'))
         && createSameClinic();
@@ -135,7 +141,7 @@ service cloud.firestore {
 
     // ---- касса: платежи (append-only; возврат = единственная правка) ----
     match /payments/{id} {
-      allow read: if hasPerm('payments.read') && sameClinic();
+      allow read: if hasPerm('payments.read') && (sameClinic() || isPlatform());
       // Создаёт кассир; фиксируем автора и стартовый статус.
       allow create: if hasPerm('payments.create')
         && request.resource.data.status == 'paid'
@@ -166,7 +172,7 @@ service cloud.firestore {
     // ---- касса: прайс-лист услуг (кассир читает, чтобы собрать чек) ----
     match /services/{id} {
       allow read: if (hasPerm('services.read') || hasPerm('payments.create'))
-        && sameClinic();
+        && (sameClinic() || isPlatform());
       allow create: if hasPerm('services.manage') && createSameClinic();
       allow update: if hasPerm('services.manage')
         && sameClinic() && createSameClinic();
@@ -175,7 +181,7 @@ service cloud.firestore {
 
     // ---- касса: смены (открытие/закрытие; учёт append-only) ----
     match /cash_shifts/{id} {
-      allow read: if hasPerm('payments.read') && sameClinic();
+      allow read: if hasPerm('payments.read') && (sameClinic() || isPlatform());
       // Открывает кассир; фиксируем автора и стартовый статус `open`.
       allow create: if hasPerm('payments.create')
         && request.resource.data.status == 'open'
@@ -197,7 +203,7 @@ service cloud.firestore {
 
     // ---- касса: изъятия наличных (append-only, только создание) ----
     match /cash_withdrawals/{id} {
-      allow read: if hasPerm('payments.read') && sameClinic();
+      allow read: if hasPerm('payments.read') && (sameClinic() || isPlatform());
       // Оформляет кассир; фиксируем автора. Правка запрещена (append-only),
       // удалить ошибочную запись может только супер-админ.
       allow create: if hasPerm('payments.create')
@@ -220,10 +226,9 @@ service cloud.firestore {
     // ---- сотрудники ----
     // Читать свой профиль может сам сотрудник; ВСЕ профили — платформенный
     // админ; клинический супер-админ — только сотрудников СВОЕЙ клиники.
-    // Самостоятельная регистрация разрешена ТОЛЬКО «обезоруженной»: uid == свой,
-    // is_superuser == false, без прав/роли, clinic_id == '' и без платформенного
-    // флага — клинику и роль назначает супер-админ позже (у нового профиля прав
-    // нет, поэтому до назначения он не видит данных). Клинический супер-админ
+    // Самостоятельная регистрация ЗАПРЕЩЕНА: аккаунты заводит только
+    // платформенный владелец (isPlatform) или клинический супер-админ — строго
+    // в свою клинику и без платформенного флага. Клинический супер-админ
     // заводит/правит/удаляет сотрудников ТОЛЬКО своей клиники и НЕ может ни
     // выдать is_platform_admin, ни «увести» сотрудника в другую клинику —
     // это закрывает самоэскалацию и межклиничные вмешательства.
@@ -232,25 +237,12 @@ service cloud.firestore {
         || isPlatform()
         || (isSuper() && resource.data.clinic_id == myClinic());
       // Платформенный админ заводит кого угодно; клинический супер-админ —
-      // только в свою клинику и без платформенного флага. Самостоятельная
-      // регистрация — строго «обезоруженная» (см. выше). Роль нельзя выставить
-      // себе — иначе клиент поднял бы себе доступ.
+      // только в свою клинику и без платформенного флага. Роль нельзя
+      // выставить себе — самостоятельная регистрация закрыта.
       allow create: if isPlatform()
         || (isSuper()
             && request.resource.data.clinic_id == myClinic()
-            && request.resource.data.get('is_platform_admin', false) != true)
-        || (request.auth.uid == uid
-            && request.resource.data.is_superuser == false
-            && (!('permissions' in request.resource.data)
-                || request.resource.data.permissions.size() == 0)
-            && (!('role' in request.resource.data)
-                || request.resource.data.role == '')
-            && request.resource.data.get('clinic_id', '') == ''
             && request.resource.data.get('is_platform_admin', false) != true);
-      // ⚠️ ВРЕМЕННО — УБРАТЬ ПЕРЕД ПРОДОМ (эта одна строка + кнопка на входе).
-      // Кнопка «Регистрация супер-админа» разрешает завести СВОЙ staff-док с
-      // любыми правами (супер + платформенный). Это самоэскалация — снять.
-      allow create: if request.auth.uid == uid; // TEMP-SUPER-SIGNUP
       // Правка супером: только своя клиника; платформенный флаг и клиника
       // сотрудника при этом НЕ меняются (get с дефолтом — поля могло не быть).
       allow update: if isPlatform()
@@ -272,7 +264,7 @@ service cloud.firestore {
       allow create: if isActive()
         && request.resource.data.created_by == request.auth.uid
         && createSameClinic();
-      allow read: if (hasPerm('audit.read') || isSuper()) && sameClinic();
+      allow read: if (hasPerm('audit.read') || isSuper()) && (sameClinic() || isPlatform());
       allow update, delete: if false;
     }
 
@@ -281,7 +273,7 @@ service cloud.firestore {
     // выбирают тип анализа); править — держатель catalog.manage (супер-админ
     // неявно), только в своей клинике.
     match /analysis_types/{id} {
-      allow read: if isActive() && sameClinic();
+      allow read: if isActive() && (sameClinic() || isPlatform());
       allow create: if hasPerm('catalog.manage') && createSameClinic();
       allow update: if hasPerm('catalog.manage')
         && sameClinic() && createSameClinic();
@@ -290,7 +282,7 @@ service cloud.firestore {
 
     // ---- справочник референсов фиброскана (каталог, свой на клинику) ----
     match /fibroscan_refs/{id} {
-      allow read: if isActive() && sameClinic();
+      allow read: if isActive() && (sameClinic() || isPlatform());
       allow create: if hasPerm('catalog.manage') && createSameClinic();
       allow update: if hasPerm('catalog.manage')
         && sameClinic() && createSameClinic();
@@ -302,7 +294,7 @@ service cloud.firestore {
     // категории товара); управлять — держатель inventory.manage (супер-админ
     // неявно), только в своей клинике.
     match /product_categories/{id} {
-      allow read: if isActive() && sameClinic();
+      allow read: if isActive() && (sameClinic() || isPlatform());
       allow create: if hasPerm('inventory.manage') && createSameClinic();
       allow update: if hasPerm('inventory.manage')
         && sameClinic() && createSameClinic();

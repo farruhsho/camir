@@ -163,6 +163,27 @@ class StaffRepository {
     );
   }
 
+  /// Точечно переопределяет ГРАНУЛЯРНЫЕ права сотрудника, НЕ трогая его роль
+  /// (роль остаётся прежней; смена роли позже пересчитает права заново — см.
+  /// [updateRole]). Платформенный владелец использует это, чтобы «донастроить»
+  /// доступ поверх шаблона роли. Только супер-админ/владелец (гейт в
+  /// firestore.rules).
+  Future<void> updatePermissions(String uid, List<String> permissions) async {
+    await _staff.doc(uid).update(<String, dynamic>{
+      'permissions': permissions,
+      'updated_by': _auth.currentUser?.uid,
+      'updated_at': FieldValue.serverTimestamp(),
+    });
+    await logAudit(
+      module: 'staff',
+      entity: 'staff',
+      entityId: uid,
+      action: 'update',
+      summary: 'Изменены права сотрудника (${permissions.length} шт.)',
+      changes: <String, dynamic>{'permissions': permissions},
+    );
+  }
+
   /// Отзывает/возвращает доступ сотруднику (флаг `disabled`). Auth-аккаунт при
   /// этом не удаляется (для этого нужен Admin SDK); вход блокируется клиентом
   /// (`AuthRepository._userFromUid`) и может блокироваться правилами.

@@ -56,34 +56,6 @@ class AuthController extends Notifier<AuthState> {
     _reloadClinicIdentity();
   }
 
-  /// Registers a new **neutered** staff account (no role, no permissions) and
-  /// signs it back out — access is granted later by a superadmin via console.
-  /// The login screen shows a confirmation note. Throws [AuthException] on
-  /// failure (handled by the login screen).
-  Future<void> signUp(String email, String password, String fullName) async {
-    await _repo.signUp(email: email, password: password, fullName: fullName);
-    // Новый аккаунт создан без прав — сразу выходим, доступ выдаёт админ.
-    await _repo.logout();
-    state = const AuthState(AuthStatus.unauthenticated);
-    _reloadClinicIdentity();
-  }
-
-  /// ⚠️ ВРЕМЕННО (убрать вместе с кнопкой): саморегистрация супер-админа —
-  /// создаёт учётку с полным доступом и сразу входит. Throws [AuthException].
-  Future<void> registerSuperadminTemp(
-    String email,
-    String password,
-    String fullName,
-  ) async {
-    final user = await _repo.registerSuperadminTemp(
-      email: email,
-      password: password,
-      fullName: fullName,
-    );
-    state = AuthState(AuthStatus.authenticated, user);
-    _reloadClinicIdentity();
-  }
-
   /// Быстрый вход по роли (для тестирования) — анонимный Firebase-вход + роль.
   /// Throws [AuthException] on failure.
   Future<void> loginAsRole(String role) async {

@@ -2,26 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/clinic_scope.dart';
-import '../../../core/auth/role_catalog.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/widgets/async_value_widget.dart';
-import '../../../core/widgets/confirm_dialog.dart';
-import '../../../core/widgets/detail_sheet.dart';
-import '../../../core/widgets/koz_widgets.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../clinics/data/clinics_repository.dart';
 import '../../clinics/domain/clinic.dart';
 import '../data/staff_repository.dart';
 import '../domain/staff_member.dart';
-
-/// Значение роли в выпадашках → человеко-читаемая подпись. Пустая строка —
-/// сотрудник без роли (нет доступа, пока супер-админ не назначит).
-const Map<String, String> _kRoleChoices = <String, String>{
-  '': 'Без роли (нет доступа)',
-  roleReception: roleReception,
-  roleSuperadmin: roleSuperadmin,
-};
+import 'staff_tile.dart';
 
 /// Экран «Сотрудники» — только для супер-админа: список персонала, заведение
 /// новых учёток (через вторичное Firebase-приложение), смена роли и
@@ -106,13 +95,10 @@ class StaffScreen extends ConsumerWidget {
                     child: Column(
                       children: [
                         for (final s in items)
-                          _StaffTile(
+                          StaffTile(
                             staff: s,
                             isSelf: s.uid == user.id,
                             clinicLabel: clinicLabelOf(s),
-                            onChangeRole: () => _changeRole(context, ref, s),
-                            onToggleDisabled: () =>
-                                _toggleDisabled(context, ref, s),
                           ),
                       ],
                     ),
@@ -142,241 +128,6 @@ class StaffScreen extends ConsumerWidget {
       );
     }
   }
-
-  Future<void> _changeRole(
-    BuildContext context,
-    WidgetRef ref,
-    StaffMember s,
-  ) async {
-    var role = _kRoleChoices.containsKey(s.role) ? s.role : '';
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Роль: ${s.fullName.isEmpty ? s.email : s.fullName}'),
-        content: StatefulBuilder(
-          builder: (ctx, setLocal) => DropdownButtonFormField<String>(
-            initialValue: role,
-            isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Роль'),
-            items: [
-              for (final e in _kRoleChoices.entries)
-                DropdownMenuItem(value: e.key, child: Text(e.value)),
-            ],
-            onChanged: (v) => setLocal(() => role = v ?? ''),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Сохранить'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    try {
-      await ref.read(staffRepositoryProvider).updateRole(s.uid, role);
-      if (context.mounted) ref.invalidate(staffListProvider);
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(friendlyError(e)),
-            backgroundColor: AppColors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _toggleDisabled(
-    BuildContext context,
-    WidgetRef ref,
-    StaffMember s,
-  ) async {
-    final disable = !s.disabled;
-    final who = s.fullName.isEmpty ? s.email : s.fullName;
-    final ok = await confirmDialog(
-      context,
-      title: disable ? 'Отключить доступ?' : 'Включить доступ?',
-      message: disable
-          ? 'Сотрудник «$who» больше не сможет войти в приложение.'
-          : 'Сотрудник «$who» снова сможет входить в приложение.',
-      confirmLabel: disable ? 'Отключить' : 'Включить',
-      danger: disable,
-    );
-    if (!ok) return;
-    try {
-      await ref.read(staffRepositoryProvider).setDisabled(s.uid, disable);
-      if (context.mounted) ref.invalidate(staffListProvider);
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(friendlyError(e)),
-            backgroundColor: AppColors.red,
-          ),
-        );
-      }
-    }
-  }
-}
-
-class _StaffTile extends StatelessWidget {
-  const _StaffTile({
-    required this.staff,
-    required this.isSelf,
-    required this.onChangeRole,
-    required this.onToggleDisabled,
-    this.clinicLabel,
-  });
-
-  final StaffMember staff;
-  final bool isSelf;
-
-  /// Название клиники сотрудника — показывается ТОЛЬКО платформенному
-  /// администратору (у клинического супера весь список — его клиника).
-  final String? clinicLabel;
-
-  final VoidCallback onChangeRole;
-  final VoidCallback onToggleDisabled;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: AppCard(
-        padding: const EdgeInsets.all(14),
-        onTap: () => _showStaffDetail(
-          context,
-          staff,
-          isSelf: isSelf,
-          clinicLabel: clinicLabel,
-        ),
-        child: Row(
-          children: [
-            InitialsAvatar(staff.initials, size: 42),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Flexible(
-                        child: Text(
-                          staff.fullName.isEmpty ? '—' : staff.fullName,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.ink,
-                          ),
-                        ),
-                      ),
-                      if (isSelf) ...[
-                        const SizedBox(width: 8),
-                        const Pill(label: 'вы'),
-                      ],
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    staff.email,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      color: AppColors.sub,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      StatusBadge(
-                        staff.displayRole,
-                        kind: staff.isSuperuser
-                            ? BadgeKind.info
-                            : (staff.role.isEmpty
-                                  ? BadgeKind.neutral
-                                  : BadgeKind.success),
-                      ),
-                      if (staff.disabled)
-                        const StatusBadge('Отключён', kind: BadgeKind.danger),
-                      if (clinicLabel != null && clinicLabel!.isNotEmpty)
-                        Pill(label: clinicLabel!),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            // Свой аккаунт нельзя понизить/отключить — защита от самоблокировки.
-            if (!isSelf)
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert, color: AppColors.sub),
-                onSelected: (v) {
-                  if (v == 'role') onChangeRole();
-                  if (v == 'disabled') onToggleDisabled();
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(
-                    value: 'role',
-                    child: Text('Сменить роль'),
-                  ),
-                  PopupMenuItem(
-                    value: 'disabled',
-                    child: Text(staff.disabled ? 'Включить' : 'Отключить'),
-                  ),
-                ],
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Единый детальный просмотр «список → деталь» со ВСЕМИ полями сотрудника.
-/// Открывается тапом по плитке; трёхточечное меню действий сохранено.
-void _showStaffDetail(
-  BuildContext context,
-  StaffMember s, {
-  required bool isSelf,
-  String? clinicLabel,
-}) {
-  showDetailSheet(
-    context,
-    title: s.fullName.isEmpty ? s.email : s.fullName,
-    rows: [
-      DetailRow('ФИО', s.fullName),
-      DetailRow('Email', s.email),
-      DetailRow('Роль', s.displayRole, strong: true),
-      // Пустое значение скрывается — строка видна только платформенному админу.
-      DetailRow('Клиника', clinicLabel ?? ''),
-      DetailRow('Супер-админ', s.isSuperuser ? 'Да' : 'Нет'),
-      DetailRow('Доступ', s.disabled ? 'Отключён' : 'Активен'),
-      if (isSelf) DetailRow('Это вы', 'Да'),
-      DetailRow.section('Служебное'),
-      DetailRow('Создан', _fmtStaffTs(s.createdAt)),
-      DetailRow('UID', s.uid),
-    ],
-  );
-}
-
-/// Форматирует таймстамп как `ДД.ММ.ГГГГ ЧЧ:ММ` (или пустую строку — тогда
-/// строка детали скрывается).
-String _fmtStaffTs(DateTime? d) {
-  if (d == null) return '';
-  String two(int v) => v.toString().padLeft(2, '0');
-  return '${two(d.day)}.${two(d.month)}.${d.year.toString().padLeft(4, '0')} '
-      '${two(d.hour)}:${two(d.minute)}';
 }
 
 /// Диалог заведения сотрудника. Возвращает `true`, если аккаунт создан.
@@ -571,7 +322,7 @@ class _AddStaffDialogState extends ConsumerState<_AddStaffDialog> {
                   isDense: true,
                 ),
                 items: [
-                  for (final e in _kRoleChoices.entries)
+                  for (final e in kRoleChoices.entries)
                     DropdownMenuItem(value: e.key, child: Text(e.value)),
                 ],
                 onChanged: (v) => setState(() => _role = v ?? ''),

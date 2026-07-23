@@ -6,6 +6,7 @@ import '../../features/auth/application/auth_controller.dart';
 import '../../features/auth/domain/auth_user.dart';
 import '../../features/clinics/data/clinics_repository.dart';
 import '../../features/clinics/domain/clinic.dart';
+import '../auth/clinic_session.dart';
 import '../auth/clinic_types.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_typography.dart';
@@ -406,6 +407,9 @@ class _Sidebar extends ConsumerWidget {
                 ],
               ),
             ),
+            // Переключатель клиники — ТОЛЬКО владельцу платформы. Он работает
+            // «изнутри» выбранной клиники; выбор ре-скоупит всю сессию.
+            if (user?.isPlatformAdmin ?? false) _ClinicSwitcher(clinic: clinic),
             const Padding(
               padding: EdgeInsets.fromLTRB(22, 4, 22, 6),
               child: Align(
@@ -489,6 +493,135 @@ class _Sidebar extends ConsumerWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Компактный переключатель активной клиники для владельца платформы. Показан
+/// под идентичностью клиники в сайдбаре (только широкий макет). Список — активные
+/// клиники реестра ([clinicsProvider]); текущая помечается галочкой. Выбор
+/// ре-скоупит сессию через [switchActiveClinic] и уводит на «Дашборд» (роутер
+/// сам поправит цель, если у клиники модуль дашборда выключен).
+class _ClinicSwitcher extends ConsumerWidget {
+  const _ClinicSwitcher({required this.clinic});
+
+  /// Активная клиника сессии (для подписи пилюли). null — ещё загружается.
+  final Clinic? clinic;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final clinics = (ref.watch(clinicsProvider).valueOrNull ?? const <Clinic>[])
+        .where((c) => c.active)
+        .toList();
+    // Пока реестр не загрузился (или пуст) — переключать нечего, прячем.
+    if (clinics.isEmpty) return const SizedBox.shrink();
+
+    final currentId = clinic?.id;
+    final currentName = (clinic?.name ?? '').trim();
+    final label = currentName.isEmpty ? 'Выберите клинику' : currentName;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+      child: PopupMenuButton<String>(
+        tooltip: 'Сменить клинику',
+        position: PopupMenuPosition.under,
+        color: AppColors.sidebarBottom,
+        elevation: 8,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        onSelected: (id) async {
+          if (id == currentId) return;
+          await switchActiveClinic(ref, id);
+          if (context.mounted) context.go('/dashboard');
+        },
+        itemBuilder: (context) => [
+          for (final c in clinics)
+            PopupMenuItem<String>(
+              value: c.id,
+              height: 42,
+              child: Row(
+                children: [
+                  Icon(
+                    c.id == currentId
+                        ? Icons.check_rounded
+                        : Icons.apartment_outlined,
+                    size: 17,
+                    color: c.id == currentId
+                        ? AppColors.sidebarAccent
+                        : AppColors.sidebarItem,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      c.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: AppColors.onDark,
+                        fontSize: 13,
+                        fontWeight: c.id == currentId
+                            ? FontWeight.w700
+                            : FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.05),
+            borderRadius: BorderRadius.circular(11),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.swap_horiz_rounded,
+                size: 18,
+                color: AppColors.sidebarSub,
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'КЛИНИКА',
+                      style: TextStyle(
+                        color: AppColors.sidebarSub,
+                        fontSize: 9,
+                        letterSpacing: 1.2,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: AppColors.onDark,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.expand_more_rounded,
+                size: 18,
+                color: AppColors.sidebarSub,
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -8,10 +8,8 @@ import '../../../core/utils/error_messages.dart';
 import '../../../core/widgets/cadmir_logo.dart';
 import '../application/auth_controller.dart';
 
-/// Экран входа «Цадмир». Два режима одной формы:
-///  • Вход — email + пароль.
-///  • Создать аккаунт — email + пароль + ФИО (без выбора роли).
-/// Новый аккаунт создаётся БЕЗ прав — роль назначает супер-админ через консоль.
+/// Экран входа «Цадмир». Только вход по email + паролю — аккаунты создаёт
+/// владелец платформы через «Сотрудники»/«Клиники», саморегистрации нет.
 /// Кнопки быстрого входа по роли доступны только в debug-сборке (kDebugMode).
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -23,16 +21,12 @@ class LoginScreen extends ConsumerStatefulWidget {
 class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
-  final _fullName = TextEditingController();
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
   final _formKey = GlobalKey<FormState>();
   bool _loading = false;
   bool _obscurePassword = true;
   bool _remember = true;
-  bool _signUpMode = false;
-  // ⚠️ ВРЕМЕННО: режим саморегистрации супер-админа (кнопка ниже; убрать потом).
-  bool _superRegMode = false;
   String? _error;
 
   @override
@@ -55,17 +49,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   void dispose() {
     _email.dispose();
     _password.dispose();
-    _fullName.dispose();
     _emailFocus.dispose();
     _passwordFocus.dispose();
     super.dispose();
-  }
-
-  void _toggleMode() {
-    setState(() {
-      _signUpMode = !_signUpMode;
-      _error = null;
-    });
   }
 
   Future<void> _submit() async {
@@ -77,40 +63,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     // Captured before any await: on success the router disposes this screen.
     final prefs = ref.read(uiPrefsProvider);
     final auth = ref.read(authControllerProvider.notifier);
-    final messenger = ScaffoldMessenger.of(context);
     final email = _email.text.trim();
     try {
-      if (_superRegMode) {
-        // ⚠️ ВРЕМЕННО: регистрируемся супер-админом и остаёмся в системе —
-        // роутер уводит на домашний экран.
-        await auth.registerSuperadminTemp(
-          email,
-          _password.text,
-          _fullName.text.trim(),
-        );
-      } else if (_signUpMode) {
-        await auth.signUp(email, _password.text, _fullName.text.trim());
-        // Аккаунт создаётся обезоруженным (без прав) и сразу выходит из системы:
-        // возвращаем форму в режим входа и показываем пояснение.
-        if (mounted) {
-          setState(() {
-            _signUpMode = false;
-            _password.clear();
-          });
-          messenger.showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Аккаунт создан. Доступ выдаёт администратор — '
-                'обратитесь к нему для назначения роли.',
-              ),
-            ),
-          );
-        }
-      } else {
-        await auth.login(email, _password.text);
-        // Persist (or clear) the remembered email only after a successful login.
-        await prefs.writeRememberedEmail(_remember ? email : null);
-      }
+      await auth.login(email, _password.text);
+      // Persist (or clear) the remembered email only after a successful login.
+      await prefs.writeRememberedEmail(_remember ? email : null);
       // Router redirect handles navigation on success.
     } catch (e) {
       if (mounted) setState(() => _error = friendlyError(e));
@@ -175,7 +132,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ),
                       // Быстрый вход по роли — только в debug-сборке; в release
                       // ветка (kDebugMode == false) вырезается компилятором.
-                      if (!_signUpMode && kDebugMode) ...[
+                      if (kDebugMode) ...[
                         const SizedBox(height: 24),
                         Text(
                           'Быстрый вход (для теста)',
@@ -253,12 +210,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         controller: _password,
                         focusNode: _passwordFocus,
                         obscureText: _obscurePassword,
-                        textInputAction: _signUpMode
-                            ? TextInputAction.next
-                            : TextInputAction.done,
-                        onFieldSubmitted: (_) {
-                          if (!_signUpMode) _submit();
-                        },
+                        textInputAction: TextInputAction.done,
+                        onFieldSubmitted: (_) => _submit(),
                         decoration: InputDecoration(
                           labelText: 'Пароль',
                           prefixIcon: const Icon(Icons.lock_outline),
@@ -276,104 +229,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             ),
                           ),
                         ),
-                        validator: (v) {
-                          if (v == null || v.isEmpty) return 'Введите пароль';
-                          if ((_signUpMode || _superRegMode) && v.length < 6) {
-                            return 'Минимум 6 символов';
-                          }
-                          return null;
-                        },
+                        validator: (v) =>
+                            (v == null || v.isEmpty) ? 'Введите пароль' : null,
                       ),
-                      if (_signUpMode || _superRegMode) ...[
-                        const SizedBox(height: 16),
-                        TextFormField(
-                          controller: _fullName,
-                          textInputAction: TextInputAction.next,
-                          textCapitalization: TextCapitalization.words,
-                          decoration: const InputDecoration(
-                            labelText: 'ФИО',
-                            prefixIcon: Icon(Icons.badge_outlined),
-                          ),
-                          validator: (v) => (v == null || v.trim().isEmpty)
-                              ? 'Введите ФИО'
-                              : null,
-                        ),
-                      ],
-                      if (_signUpMode) ...[
-                        const SizedBox(height: 16),
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: scheme.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Icon(
-                                Icons.info_outline,
-                                size: 18,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  'Новый аккаунт создаётся без прав — доступ '
-                                  'выдаёт администратор.',
-                                  style: textTheme.bodySmall?.copyWith(
-                                    color: scheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                      // ⚠️ ВРЕМЕННО: предупреждение режима саморегистрации супера.
-                      if (_superRegMode) ...[
-                        const SizedBox(height: 16),
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: scheme.errorContainer,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Icon(
-                                Icons.warning_amber_rounded,
-                                size: 18,
-                                color: scheme.onErrorContainer,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  '⚠️ Временно: аккаунт получит ПОЛНЫЙ доступ '
-                                  '(супер-админ + управление клиниками). Уберите '
-                                  'эту кнопку перед реальным продом.',
-                                  style: textTheme.bodySmall?.copyWith(
-                                    color: scheme.onErrorContainer,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                      if (!_signUpMode && !_superRegMode) ...[
-                        const SizedBox(height: 8),
-                        CheckboxListTile(
-                          value: _remember,
-                          onChanged: _loading
-                              ? null
-                              : (v) => setState(() => _remember = v ?? true),
-                          title: const Text('Запомнить логин'),
-                          controlAffinity: ListTileControlAffinity.leading,
-                          contentPadding: EdgeInsets.zero,
-                          dense: true,
-                        ),
-                      ],
+                      const SizedBox(height: 8),
+                      CheckboxListTile(
+                        value: _remember,
+                        onChanged: _loading
+                            ? null
+                            : (v) => setState(() => _remember = v ?? true),
+                        title: const Text('Запомнить логин'),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                      ),
                       if (_error != null) ...[
                         const SizedBox(height: 16),
                         Text(_error!, style: TextStyle(color: scheme.error)),
@@ -389,53 +258,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   strokeWidth: 2,
                                 ),
                               )
-                            : Text(
-                                _superRegMode
-                                    ? 'Стать супер-админом'
-                                    : (_signUpMode
-                                          ? 'Создать аккаунт'
-                                          : 'Войти'),
-                              ),
+                            : const Text('Войти'),
                       ),
-                      const SizedBox(height: 8),
-                      TextButton(
-                        onPressed: _loading
-                            ? null
-                            : () {
-                                if (_superRegMode) {
-                                  setState(() {
-                                    _superRegMode = false;
-                                    _error = null;
-                                  });
-                                } else {
-                                  _toggleMode();
-                                }
-                              },
-                        child: Text(
-                          _superRegMode
-                              ? 'Назад ко входу'
-                              : (_signUpMode
-                                    ? 'Уже есть аккаунт? Войти'
-                                    : 'Создать аккаунт'),
-                        ),
-                      ),
-                      // ⚠️ ВРЕМЕННО — УБРАТЬ вместе с TEMP-строкой в firestore.rules
-                      // и методами registerSuperadminTemp.
-                      if (!_signUpMode && !_superRegMode)
-                        TextButton(
-                          onPressed: _loading
-                              ? null
-                              : () => setState(() {
-                                  _superRegMode = true;
-                                  _error = null;
-                                }),
-                          style: TextButton.styleFrom(
-                            foregroundColor: scheme.error,
-                          ),
-                          child: const Text(
-                            'Регистрация супер-админа (временно)',
-                          ),
-                        ),
                     ],
                   ),
                 ),
