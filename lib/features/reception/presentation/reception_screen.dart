@@ -289,7 +289,14 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
       await ref.read(visitRepositoryProvider).markPaid(v.id);
       ref.invalidate(todayVisitsProvider);
       ref.invalidate(todayPaymentsProvider);
-      if (mounted) _snack('Оплата проведена');
+      if (mounted) {
+        _snack('Оплата проведена');
+        // После оплаты сразу ведём на профильный экран по направлению
+        // (Анализы/Фиброскан) — ручной кнопки «Направить» больше нет. Для
+        // направлений без экрана (консультация) остаёмся в регистратуре.
+        final route = _routeForReferral(v.referral);
+        if (route != null) context.go(route);
+      }
     } catch (e) {
       if (mounted) _snack(friendlyError(e), error: true);
     } finally {
@@ -789,7 +796,9 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
                       onPay: (v.isAwaitingPayment && canPay)
                           ? () => _pay(v)
                           : null,
-                      onRoute: _routeCallback(v),
+                      // Кнопки «Направить» больше нет: после оплаты переход
+                      // на профильный экран выполняется автоматически (см. _pay).
+                      onRoute: null,
                       onDone: (v.isPaid && canCreate)
                           ? () => _markDone(v.id)
                           : null,
@@ -803,14 +812,6 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
     );
   }
 
-  /// Колбэк «Направить» для оплаченного приёма (или `null`, если нет профильного
-  /// экрана по направлению).
-  VoidCallback? _routeCallback(Visit v) {
-    if (!v.isPaid) return null;
-    final route = _routeForReferral(v.referral);
-    if (route == null) return null;
-    return () => context.go(route);
-  }
 }
 
 /// Валидатор необязательного ФИО-поля (отчество): пусто — допустимо, цифры —
