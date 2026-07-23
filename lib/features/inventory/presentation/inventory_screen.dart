@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/export/xlsx_export.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/input_formatters.dart';
@@ -87,15 +88,52 @@ class InventoryScreen extends ConsumerWidget {
     );
   }
 
-  /// Строит и открывает складской PDF-отчёт (превью/печать/сохранение).
+  /// Складской отчёт: пользователь выбирает печать (PDF → принтер) или выгрузку
+  /// в Excel. Данные без периода — весь текущий каталог остатков.
   Future<void> _exportReport(BuildContext context, WidgetRef ref) async {
     final items = ref.read(warehouseStockProvider).valueOrNull;
     if (items == null || items.isEmpty) {
       _snack(context, 'Нет данных для отчёта');
       return;
     }
+    final format = await pickExportFormat(context);
+    if (format == null || !context.mounted) return;
     try {
-      await printWarehouseReport(items);
+      if (format == ExportFormat.printPdf) {
+        await printWarehouseReport(items);
+      } else {
+        // Те же колонки, что и в PDF-отчёте (warehouse_pdf.dart):
+        // Товар · Категория · Ед. · Остаток · Мин. · Срок годности · Статус.
+        const headers = <String>[
+          'Товар',
+          'Категория',
+          'Ед.',
+          'Остаток',
+          'Мин.',
+          'Срок годности',
+          'Статус',
+        ];
+        final rows = <List<Object?>>[
+          for (final ps in items)
+            <Object?>[
+              ps.product.name,
+              ps.product.category ?? '—',
+              ps.product.unit,
+              _trimNum(ps.stock),
+              ps.product.minStock != null
+                  ? _trimNum(ps.product.minStock!)
+                  : '—',
+              ps.product.expiry != null ? _fmtDmy(ps.product.expiry!) : '—',
+              _warehouseStatusText(ps),
+            ],
+        ];
+        await exportRowsToXlsx(
+          fileName: 'Отчёт_склад_${_todayIso()}',
+          sheetName: 'Склад',
+          headers: headers,
+          rows: rows,
+        );
+      }
     } catch (e) {
       if (context.mounted) _snack(context, friendlyError(e), error: true);
     }
@@ -1372,6 +1410,28 @@ void _snack(BuildContext context, String message, {bool error = false}) {
 String _trimNum(num value) {
   if (value == value.roundToDouble()) return value.toInt().toString();
   return value.toString();
+}
+
+/// Сегодняшняя дата в ISO `YYYY-MM-DD` (для имени файла экспорта).
+String _todayIso() {
+  final d = DateTime.now();
+  return '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+}
+
+/// Сводный статус строки склада для отчёта: «мало» / «истекает» / «истёк»
+/// (через запятую) либо «—». Повторяет логику warehouse_pdf.dart, чтобы колонка
+/// «Статус» в Excel совпадала с PDF один-в-один.
+String _warehouseStatusText(ProductStock ps) {
+  final parts = <String>[];
+  if (ps.low) parts.add('мало');
+  if (ps.product.expired) {
+    parts.add('истёк');
+  } else if (ps.product.expiringSoon) {
+    parts.add('истекает');
+  }
+  return parts.isEmpty ? '—' : parts.join(', ');
 }
 
 /// Компактная подпись «дней до срока»: 0 → «сегодня», иначе «N дн.».

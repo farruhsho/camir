@@ -8,6 +8,7 @@ import '../../../core/utils/formatters.dart';
 import '../../../core/utils/input_formatters.dart';
 import '../../../core/widgets/async_value_widget.dart';
 import '../../../core/widgets/koz_widgets.dart';
+import '../../../core/widgets/patient_search.dart';
 import '../../auth/application/auth_controller.dart';
 import '../../patients/data/patients_repository.dart';
 import '../../patients/domain/patient.dart';
@@ -78,6 +79,12 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   /// id приёма, по которому сейчас выполняется действие (оплата/завершение).
   String? _busyId;
 
+  /// Выбранный из картотеки пациент — режим «приём для уже зарегистрированного».
+  /// `null` — обычный режим регистрации нового пациента (идентичность вводится
+  /// вручную). Когда задан, поля ФИО/дата/телефон не монтируются, а идентичность
+  /// берётся напрямую из выбранной карты.
+  Patient? _existingPatient;
+
   @override
   void dispose() {
     for (final c in [
@@ -118,14 +125,16 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   }
 
   Future<void> _save() async {
+    final existing = _existingPatient;
     final formOk = _formKey.currentState!.validate();
-    // Дата рождения — обязательна. Диапазон пикера уже гарантирует реализм
-    // (не в будущем, возраст в пределах ~120), поэтому здесь проверяем только
-    // «выбрана ли она вообще».
-    if (_birthDate == null) {
+    // Дата рождения — обязательна ТОЛЬКО при регистрации нового пациента; для
+    // существующей карты идентичность (и дата) уже есть. Диапазон пикера
+    // гарантирует реализм (не в будущем, возраст ~120), поэтому в новой ветке
+    // проверяем лишь «выбрана ли она вообще».
+    if (existing == null && _birthDate == null) {
       setState(() => _birthDateError = 'Укажите дату рождения');
     }
-    if (!formOk || _birthDate == null) return;
+    if (!formOk || (existing == null && _birthDate == null)) return;
 
     final catalog =
         ref.read(activeServicesProvider).valueOrNull ?? const <ServiceItem>[];
@@ -140,32 +149,41 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
       _error = null;
     });
     try {
-      final phone = assembleUzPhone(_phone.text);
-      final patientsRepo = ref.read(patientsRepositoryProvider);
+      final Patient patient;
+      if (existing != null) {
+        // Приём для уже зарегистрированного пациента: создание карты и дедуп по
+        // телефону пропускаем — идентичность берём из выбранной картотеки.
+        patient = existing;
+      } else {
+        final phone = assembleUzPhone(_phone.text);
+        final patientsRepo = ref.read(patientsRepositoryProvider);
 
-      // Дедуп по телефону: если карта уже есть — предложить переиспользовать.
-      Patient? patient;
-      if (phone != null) {
-        final existing = await patientsRepo.findByPhone(phone);
-        if (existing != null) {
-          if (!mounted) return;
-          final choice = await _confirmReuse(existing);
-          if (choice == null) return; // отмена — прервать регистрацию
-          if (choice) patient = existing;
+        // Дедуп по телефону: если карта уже есть — предложить переиспользовать.
+        Patient? found;
+        if (phone != null) {
+          final dup = await patientsRepo.findByPhone(phone);
+          if (dup != null) {
+            if (!mounted) return;
+            final choice = await _confirmReuse(dup);
+            if (choice == null) return; // отмена — прервать регистрацию
+            if (choice) found = dup;
+          }
         }
-      }
 
-      // Новая карта, если не переиспользуем существующую.
-      patient ??= await patientsRepo.create(
-        lastName: _lastName.text.trim(),
-        firstName: _firstName.text.trim(),
-        middleName: _middleName.text.trim(),
-        birthYear: _birthDate!.year,
-        birthDate: _birthDate,
-        phone: phone,
-        referral: _referral,
-        consultation: _note.text.trim(),
-      );
+        // Новая карта, если не переиспользуем существующую.
+        patient =
+            found ??
+            await patientsRepo.create(
+              lastName: _lastName.text.trim(),
+              firstName: _firstName.text.trim(),
+              middleName: _middleName.text.trim(),
+              birthYear: _birthDate!.year,
+              birthDate: _birthDate,
+              phone: phone,
+              referral: _referral,
+              consultation: _note.text.trim(),
+            );
+      }
 
       // Приём в статусе awaiting_payment с денормализованными полями пациента
       // и выбранной услугой.
@@ -185,13 +203,31 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
 
       ref.invalidate(todayVisitsProvider);
       if (mounted) {
+        final wasExisting = existing != null;
         _resetForm();
-        _snack('Пациент зарегистрирован. Приём ожидает оплаты.');
+        _snack(
+          wasExisting
+              ? 'Приём создан. Ожидает оплаты.'
+              : 'Пациент зарегистрирован. Приём ожидает оплаты.',
+        );
       }
     } catch (e) {
       if (mounted) setState(() => _error = friendlyError(e));
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  /// Открывает поиск по картотеке и переводит форму в режим «приём для уже
+  /// зарегистрированного пациента» (идентичность берётся из выбранной карты).
+  Future<void> _pickExisting() async {
+    final p = await pickPatient(context);
+    if (p != null && mounted) {
+      setState(() {
+        _existingPatient = p;
+        _error = null;
+        _birthDateError = null;
+      });
     }
   }
 
@@ -355,6 +391,7 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
       _error = null;
       _birthDate = null;
       _birthDateError = null;
+      _existingPatient = null;
       _formGen++;
     });
     for (final c in [
@@ -415,98 +452,122 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
   }
 
   Widget _formCard(bool canCreate) {
+    final existing = _existingPatient;
     return AppCard(
       child: Form(
         key: _formKey,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _SectionTitle(
-              icon: Icons.person_add_alt_1,
-              text: 'Регистрация приёма',
-            ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: _lastName,
-              textCapitalization: TextCapitalization.words,
-              textInputAction: TextInputAction.next,
-              inputFormatters: nameFormatters,
-              onFieldSubmitted: (_) => _firstNameFocus.requestFocus(),
-              decoration: const InputDecoration(
-                labelText: 'Фамилия',
-                isDense: true,
-              ),
-              validator: validateName,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _firstName,
-              focusNode: _firstNameFocus,
-              textCapitalization: TextCapitalization.words,
-              textInputAction: TextInputAction.next,
-              inputFormatters: nameFormatters,
-              onFieldSubmitted: (_) => _middleNameFocus.requestFocus(),
-              decoration: const InputDecoration(
-                labelText: 'Имя',
-                isDense: true,
-              ),
-              validator: validateName,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _middleName,
-              focusNode: _middleNameFocus,
-              textCapitalization: TextCapitalization.words,
-              textInputAction: TextInputAction.next,
-              inputFormatters: nameFormatters,
-              decoration: const InputDecoration(
-                labelText: 'Отчество',
-                hintText: 'необязательно',
-                isDense: true,
-              ),
-              validator: _optionalName,
-            ),
-            const SizedBox(height: 12),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: BirthDateField(
-                    value: _birthDate,
-                    isDense: true,
-                    errorText: _birthDateError,
-                    onChanged: (v) => setState(() {
-                      _birthDate = v;
-                      _birthDateError = null;
-                    }),
+                  child: _SectionTitle(
+                    icon: existing == null
+                        ? Icons.person_add_alt_1
+                        : Icons.assignment_ind_outlined,
+                    text: existing == null
+                        ? 'Регистрация приёма'
+                        : 'Приём: существующий пациент',
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: _phone,
-                    keyboardType: TextInputType.phone,
-                    inputFormatters: uzPhoneLocal,
-                    decoration: const InputDecoration(
-                      labelText: 'Телефон',
-                      prefixText: '+996 ',
-                      hintText: '700 12 34 56',
-                      isDense: true,
-                    ),
-                    validator: (v) {
-                      final digits = (v ?? '').replaceAll(
-                        RegExp(r'[^0-9]'),
-                        '',
-                      );
-                      if (digits.isEmpty) return null; // необязательное
-                      return digits.length == kUzPhoneLocalLength
-                          ? null
-                          : 'Введите 9 цифр номера';
-                    },
+                if (existing == null)
+                  TextButton.icon(
+                    onPressed: canCreate ? _pickExisting : null,
+                    icon: const Icon(Icons.person_search, size: 18),
+                    label: const Text('Существующий пациент'),
                   ),
-                ),
               ],
             ),
+            const SizedBox(height: 14),
+            // Идентичность: для существующего пациента — read-only баннер карты
+            // (без ввода ФИО/даты/телефона); для нового — обычные поля ввода.
+            if (existing != null)
+              _patientBanner(existing)
+            else ...[
+              TextFormField(
+                controller: _lastName,
+                textCapitalization: TextCapitalization.words,
+                textInputAction: TextInputAction.next,
+                inputFormatters: nameFormatters,
+                onFieldSubmitted: (_) => _firstNameFocus.requestFocus(),
+                decoration: const InputDecoration(
+                  labelText: 'Фамилия',
+                  isDense: true,
+                ),
+                validator: validateName,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _firstName,
+                focusNode: _firstNameFocus,
+                textCapitalization: TextCapitalization.words,
+                textInputAction: TextInputAction.next,
+                inputFormatters: nameFormatters,
+                onFieldSubmitted: (_) => _middleNameFocus.requestFocus(),
+                decoration: const InputDecoration(
+                  labelText: 'Имя',
+                  isDense: true,
+                ),
+                validator: validateName,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _middleName,
+                focusNode: _middleNameFocus,
+                textCapitalization: TextCapitalization.words,
+                textInputAction: TextInputAction.next,
+                inputFormatters: nameFormatters,
+                decoration: const InputDecoration(
+                  labelText: 'Отчество',
+                  hintText: 'необязательно',
+                  isDense: true,
+                ),
+                validator: _optionalName,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: BirthDateField(
+                      value: _birthDate,
+                      isDense: true,
+                      errorText: _birthDateError,
+                      onChanged: (v) => setState(() {
+                        _birthDate = v;
+                        _birthDateError = null;
+                      }),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _phone,
+                      keyboardType: TextInputType.phone,
+                      inputFormatters: uzPhoneLocal,
+                      decoration: const InputDecoration(
+                        labelText: 'Телефон',
+                        prefixText: '+996 ',
+                        hintText: '700 12 34 56',
+                        isDense: true,
+                      ),
+                      validator: (v) {
+                        final digits = (v ?? '').replaceAll(
+                          RegExp(r'[^0-9]'),
+                          '',
+                        );
+                        if (digits.isEmpty) return null; // необязательное
+                        return digits.length == kUzPhoneLocalLength
+                            ? null
+                            : 'Введите 9 цифр номера';
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
               key: ValueKey('referral_$_formGen'),
@@ -549,13 +610,64 @@ class _ReceptionScreenState extends ConsumerState<ReceptionScreen> {
             ],
             const SizedBox(height: 16),
             GradientButton(
-              label: 'Зарегистрировать',
+              label: existing == null
+                  ? 'Зарегистрировать'
+                  : 'Зарегистрировать приём',
               icon: Icons.save_outlined,
               loading: _saving,
               onPressed: (canCreate && !_saving) ? _save : null,
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Read-only баннер выбранной карты в режиме «существующий пациент»:
+  /// «{fullName} · №{mrn} · {birthDisplay}{ · phone}» с кнопкой [×], которая
+  /// возвращает форму в режим регистрации нового пациента.
+  Widget _patientBanner(Patient p) {
+    final sub = <String>[
+      '№${p.mrn}',
+      if (p.birthDisplay.isNotEmpty) p.birthDisplay,
+      if (p.phone != null && p.phone!.isNotEmpty) p.phone!,
+    ].join('  ·  ');
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+      decoration: BoxDecoration(
+        color: AppColors.tealBg,
+        borderRadius: BorderRadius.circular(AppColors.rField),
+        border: Border.all(color: AppColors.accent),
+      ),
+      child: Row(
+        children: [
+          InitialsAvatar(p.initials, size: 38),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  p.fullName,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.ink,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  sub,
+                  style: const TextStyle(color: AppColors.sub, fontSize: 12.5),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Убрать пациента',
+            icon: const Icon(Icons.close, size: 20),
+            onPressed: () => setState(() => _existingPatient = null),
+          ),
+        ],
       ),
     );
   }

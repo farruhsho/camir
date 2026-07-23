@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/export/xlsx_export.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/input_formatters.dart';
@@ -280,7 +281,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               GradientButton(
-                label: 'Печать / Экспорт',
+                label: 'Печать',
                 icon: Icons.print_outlined,
                 onPressed: () {
                   Navigator.of(sheetCtx).pop();
@@ -419,12 +420,51 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
         ? 'за ${_dmyFromIso(toIso)}'
         : 'за период ${_dmyFromIso(fromIso)} – ${_dmyFromIso(toIso)}';
 
+    // Пользователь выбирает: печать (PDF → принтер) или выгрузка в Excel.
+    final format = await pickExportFormat(context);
+    if (format == null || !mounted) return;
+
     try {
-      await printAnalysesJournal(
-        records: filtered,
-        types: types,
-        periodLabel: periodLabel,
-      );
+      if (format == ExportFormat.printPdf) {
+        await printAnalysesJournal(
+          records: filtered,
+          types: types,
+          periodLabel: periodLabel,
+        );
+      } else {
+        // Те же колонки, что и в PDF-журнале (analyses_journal_pdf.dart):
+        // Дата · ФИО · Г.р. · Вид анализа · Результат (+ флаг отклонения).
+        const headers = <String>[
+          'Дата',
+          'ФИО',
+          'Г.р.',
+          'Вид анализа',
+          'Результат',
+        ];
+        final rows = <List<Object?>>[];
+        for (final r in filtered) {
+          final type = findAnalysisType(types, r.analysisType);
+          final hasResult = (r.result ?? '').trim().isNotEmpty;
+          final resultText = hasResult
+              ? resultWithUnit(r.result, type)
+              : 'ожидается';
+          final flag = resultFlag(r.result, type);
+          rows.add(<Object?>[
+            _dmyFromIso(r.date),
+            r.fullName,
+            r.birthYear,
+            r.analysisType,
+            flag.isEmpty ? resultText : '$resultText ($flag)',
+          ]);
+        }
+        await exportRowsToXlsx(
+          fileName: 'Журнал_анализов_${_isoDate(DateTime.now())}',
+          sheetName: 'Анализы',
+          title: periodLabel,
+          headers: headers,
+          rows: rows,
+        );
+      }
     } catch (e) {
       if (mounted) _snack(friendlyError(e), error: true);
     }
@@ -937,7 +977,7 @@ class _AnalysesScreenState extends ConsumerState<AnalysesScreen> {
             dense: true,
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.print_outlined),
-            title: Text('Печать / Экспорт'),
+            title: Text('Печать'),
           ),
         ),
         PopupMenuItem(

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/export/xlsx_export.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/error_messages.dart';
 import '../../../core/utils/input_formatters.dart';
@@ -329,16 +330,85 @@ class _FibroscanScreenState extends ConsumerState<FibroscanScreen> {
         );
         return;
       }
-      await printFibroscanJournal(
-        records: records,
-        refs: refs,
-        periodLabel: period.label,
-        from: from,
-        to: to,
-      );
+      // Пользователь выбирает: печать (PDF → принтер) или выгрузка в Excel.
+      final format = await pickExportFormat(context);
+      if (format == null || !mounted) return;
+      if (format == ExportFormat.printPdf) {
+        await printFibroscanJournal(
+          records: records,
+          refs: refs,
+          periodLabel: period.label,
+          from: from,
+          to: to,
+        );
+      } else {
+        await _exportJournalXlsx(period, records, refs, from, to);
+      }
     } catch (e) {
       if (mounted) _snack(friendlyError(e), error: true);
     }
+  }
+
+  /// Выгрузка журнала фиброскана в .xlsx. Колонки один-в-один с PDF-журналом
+  /// (fibroscan_journal_pdf.dart): Дата · ФИО · Г.р. · Диагноз · LSM (кПа) ·
+  /// CAP (дБ/м) · IQR/Med — с производной стадией фиброза (F..) и степенью
+  /// стеатоза (S..) в ячейках LSM/CAP.
+  Future<void> _exportJournalXlsx(
+    _JournalPeriod period,
+    List<FibroscanRecord> records,
+    List<FibroRef> refs,
+    DateTime from,
+    DateTime to,
+  ) async {
+    // Ячейка LSM: «8.2 · F2» (значение + стадия) или «—», если не измерялось.
+    String lsmCell(FibroscanRecord r) {
+      final lsm = r.lsm;
+      if (lsm == null) return '—';
+      final stage = stageForLsm(lsm, refs);
+      return stage.isEmpty ? _numStr(lsm) : '${_numStr(lsm)} · $stage';
+    }
+
+    // Ячейка CAP: «250 · S1» (значение + степень) или «—».
+    String capCell(FibroscanRecord r) {
+      final cap = r.cap;
+      if (cap == null) return '—';
+      final grade = gradeForCap(cap, refs);
+      return grade.isEmpty ? _numStr(cap) : '${_numStr(cap)} · $grade';
+    }
+
+    const headers = <String>[
+      'Дата',
+      'ФИО',
+      'Г.р.',
+      'Диагноз',
+      'LSM (кПа)',
+      'CAP (дБ/м)',
+      'IQR/Med',
+    ];
+    final rows = <List<Object?>>[
+      for (final r in records)
+        <Object?>[
+          _displayDate(r.date),
+          r.fullName,
+          r.birthYear > 0 ? r.birthYear : '—',
+          r.diagnosis,
+          lsmCell(r),
+          capCell(r),
+          r.iqrMed != null ? '${_numStr(r.iqrMed!)} %' : '—',
+        ],
+    ];
+
+    final periodText = from.isAtSameMomentAs(to)
+        ? _formatDate(from)
+        : '${_formatDate(from)} – ${_formatDate(to)}';
+
+    await exportRowsToXlsx(
+      fileName: 'Журнал_фиброскана_${_iso(DateTime.now())}',
+      sheetName: 'Фиброскан',
+      title: 'Период: ${period.label} · $periodText',
+      headers: headers,
+      rows: rows,
+    );
   }
 
   // ── Сохранение ───────────────────────────────────────────────────────────────
